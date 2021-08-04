@@ -1,0 +1,13 @@
+[package]
+name = "conn_test"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.9", features = ["full"] }
+rdkafka = { version = "0.26.0", features = ["cmake-build"] }
+log = "0.4.14"
+env_logger = "0.9.0"
+rand = "0.8.4"
