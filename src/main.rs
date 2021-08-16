@@ -212,11 +212,11 @@ impl TxProducer {
     }
 
     fn execute_seq(&self, seq: u64) -> KafkaResult<()> {
-        if seq % 3 == 0 && true {
+        if seq % 3 == 0 {
             self.send_tx(seq)
-        } else if seq % 3 == 1 && true {
+        } else if seq % 3 == 1 {
             self.send_notx(seq)
-        } else if seq % 3 == 2 && true {
+        } else if seq % 3 == 2 {
             self.send_tx_abort(seq)
         } else {
             Ok(())
@@ -276,19 +276,20 @@ async fn produce(brokers: String, topic: String, my_id: usize, m: usize) {
         .set("linger.ms", "100")
         .set("retries", "0")
         .set("batch.size", "16777216")
+        .set("acks", "-1")
         .create()
         .unwrap();
 
-    let mut payload: Vec<u8> = vec![0x0f; 0x7ffff];
+    let mut payload: Vec<u8> = vec![0x0f; 0x7fff];
     rand::thread_rng().fill_bytes(&mut payload);
     debug!("Producer {} sending", my_id);
 
     for i in 0..m {
         let key = format!("{:#010x}", rand::thread_rng().next_u32() & 0x6ffff);
-        let sz = (rand::thread_rng().next_u32() & 0x7ffff) as usize;
+        let sz = (rand::thread_rng().next_u32() & 0x7fff) as usize;
         let fut = producer.send(
             FutureRecord::to(&topic).key(&key).payload(&payload[0..sz]),
-            Duration::from_millis(10000),
+            Duration::from_millis(1000),
         );
         debug!("Producer {} waiting", my_id);
         match fut.await {
