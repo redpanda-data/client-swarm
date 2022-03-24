@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-use std::str::FromStr;
 use std::time::Duration;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -37,7 +35,7 @@ async fn connections(args: Vec<String>) {
         let addr_str_copy = addr_str.clone();
         let error_count_ref = error_count.clone();
         tasks.push(tokio::spawn(async move {
-            let con = TcpStream::connect(SocketAddr::from_str(&addr_str_copy).unwrap()).await;
+            let con = TcpStream::connect(addr_str_copy).await;
             match con {
                 Err(e) => {
                     let mut locked = error_count_ref.lock().unwrap();
