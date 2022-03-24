@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,7 @@ use rdkafka::producer::{
 use rdkafka::util::Timeout;
 use rdkafka::Message;
 
+
 use log::*;
 
 /// Stress the tcp_server_listen_backlog setting
@@ -28,19 +31,27 @@ async fn connections(args: Vec<String>) {
     let n_str = args.get(1).unwrap();
     let n: i32 = n_str.parse::<i32>().unwrap();
 
+    let error_count = Arc::new(Mutex::new(0 as u32));
     let mut tasks = vec![];
     for _i in 0..n {
         let addr_str_copy = addr_str.clone();
+        let error_count_ref = error_count.clone();
         tasks.push(tokio::spawn(async move {
             let con = TcpStream::connect(SocketAddr::from_str(&addr_str_copy).unwrap()).await;
             match con {
-                Err(e) => println!("Connection error {}", e),
+                Err(e) => {
+                    let mut locked = error_count_ref.lock().unwrap();
+                    *locked += 1;
+                    println!("Connection error: {}", e);
+                },
                 Ok(mut sock) => {
                     for _j in 0..1000 {
                         match sock.write_all("ohaihowyoudoing".as_bytes()).await {
                             Ok(_bytes) => {}
                             Err(e) => {
                                 println!("write error {}", e);
+                                let mut locked = error_count_ref.lock().unwrap();
+                                *locked += 1;
                                 break;
                             }
                         }
@@ -53,6 +64,14 @@ async fn connections(args: Vec<String>) {
 
     for t in tasks {
         t.await.unwrap();
+    }
+
+    let final_errs = *(error_count.lock().unwrap());
+    if  final_errs > 0 {
+        error!("{} connection attempts failed", final_errs);
+        std::process::exit(-1);
+    } else {
+        info!("Completed with no connection errors.")
     }
 }
 
