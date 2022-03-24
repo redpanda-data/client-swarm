@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::thread::Thread;
 use std::time::Duration;
 
 use rand::RngCore;
@@ -10,27 +9,30 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, DefaultConsumerContext};
+use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer};
 use rdkafka::error::{KafkaResult, RDKafkaErrorCode};
 use rdkafka::producer::{
-    BaseProducer, BaseRecord, DefaultProducerContext, FutureProducer, FutureRecord, Producer,
+    BaseRecord, DefaultProducerContext, FutureProducer, FutureRecord, Producer,
     ThreadedProducer,
 };
-use rdkafka::types::RDKafkaErrorCode::TimedOutQueue;
 use rdkafka::util::Timeout;
 use rdkafka::Message;
 
 use log::*;
 
 /// Stress the tcp_server_listen_backlog setting
+/// A system with a small backlog will experience errors here: a system with
+/// a larger backlog will not.
 async fn connections(args: Vec<String>) {
-    let n_str = args.get(0).unwrap();
+    let addr_str = args.get(0).unwrap().to_string();
+    let n_str = args.get(1).unwrap();
     let n: i32 = n_str.parse::<i32>().unwrap();
 
     let mut tasks = vec![];
     for _i in 0..n {
-        tasks.push(tokio::spawn(async {
-            let con = TcpStream::connect(SocketAddr::from_str("192.168.1.100:9092").unwrap()).await;
+        let addr_str_copy = addr_str.clone();
+        tasks.push(tokio::spawn(async move {
+            let con = TcpStream::connect(SocketAddr::from_str(&addr_str_copy).unwrap()).await;
             match con {
                 Err(e) => println!("Connection error {}", e),
                 Ok(mut sock) => {
@@ -399,8 +401,8 @@ fn transactions_consumer(brokers: String, topic1: String, topic2: String) {
                             if t2_tx_msg.seq == tx_msg.seq {
                                 // Valid
                                 info!("OK Matching seq on {}", topic2);
-                                consumer1.commit_consumer_state(CommitMode::Sync);
-                                consumer2.commit_consumer_state(CommitMode::Sync);
+                                consumer1.commit_consumer_state(CommitMode::Sync).unwrap();
+                                consumer2.commit_consumer_state(CommitMode::Sync).unwrap();
                             } else {
                                 error!(
                                     "Unexpected seq {} on {} after receiving seq {} on {}",
@@ -448,7 +450,7 @@ fn transactions(args: Vec<String>) {
 
     producer.execute();
 
-    consumer_jh.join();
+    consumer_jh.join().unwrap();
 }
 
 #[tokio::main]
@@ -464,7 +466,7 @@ async fn main() {
             tokio::task::spawn_blocking(move || {
                 transactions(trailing_args);
             })
-            .await;
+            .await.unwrap();
         }
         "connections" => connections(trailing_args).await,
         "producers" => {
