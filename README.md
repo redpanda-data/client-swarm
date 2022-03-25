@@ -1,7 +1,9 @@
 
-# Quickstart
+# client-swarm
 
-This tool is for  stressing Redpanda with lots of concurrent
+## Quickstart
+
+This tool is for stressing Redpanda with lots of concurrent
 producer connections.
 
     # Get a rust toolchain
