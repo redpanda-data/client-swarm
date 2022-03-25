@@ -1,6 +1,6 @@
-use std::time::Duration;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use rand::RngCore;
 use tokio;
@@ -8,11 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use rdkafka::config::ClientConfig;
-use rdkafka::producer::{
-    FutureProducer, FutureRecord,
-
-};
-
+use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use log::*;
 
@@ -36,7 +32,7 @@ async fn connections(args: Vec<String>) {
                     let mut locked = error_count_ref.lock().unwrap();
                     *locked += 1;
                     println!("Connection error: {}", e);
-                },
+                }
                 Ok(mut sock) => {
                     for _j in 0..1000 {
                         match sock.write_all("ohaihowyoudoing".as_bytes()).await {
@@ -60,7 +56,7 @@ async fn connections(args: Vec<String>) {
     }
 
     let final_errs = *(error_count.lock().unwrap());
-    if  final_errs > 0 {
+    if final_errs > 0 {
         error!("{} connection attempts failed", final_errs);
         std::process::exit(-1);
     } else {
