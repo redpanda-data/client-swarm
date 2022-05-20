@@ -6,8 +6,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.9", features = ["full"] }
-rdkafka = { version = "0.26.0", features = ["cmake-build"]}
+tokio = { version = "1.17.0", features = ["full"] }
+rdkafka = { version = "0.28.0", features = ["cmake-build"]}
+async-std = { version = "1.9.0", features = ["attributes"] }
+futures = { version = "0.3", default-features = false }
 log = "0.4.14"
 env_logger = "0.9.0"
 rand = "0.8.4"
