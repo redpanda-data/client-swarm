@@ -7,9 +7,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+
+use clap::{Parser, Subcommand};
 
 use rand::RngCore;
 use tokio;
@@ -24,11 +27,7 @@ use log::*;
 /// Stress the tcp_server_listen_backlog setting
 /// A system with a small backlog will experience errors here: a system with
 /// a larger backlog will not.
-async fn connections(args: Vec<String>) {
-    let addr_str = args.get(0).unwrap().to_string();
-    let n_str = args.get(1).unwrap();
-    let n: i32 = n_str.parse::<i32>().unwrap();
-
+async fn connections(addr_str: String, n: i32) {
     let error_count = Arc::new(Mutex::new(0 as u32));
     let mut tasks = vec![];
     for _i in 0..n {
@@ -105,12 +104,7 @@ async fn produce(brokers: String, topic: String, my_id: usize, m: usize) {
 }
 
 /// Stress the system for very large numbers of producers
-async fn producers(args: Vec<String>) {
-    let brokers = args.get(0).unwrap();
-    let topic = args.get(1).unwrap();
-    let n: usize = args.get(2).unwrap().parse().unwrap();
-    let m: usize = args.get(3).unwrap().parse().unwrap();
-
+async fn producers(brokers: String, topic: String, m: usize, n: usize) {
     let mut tasks = vec![];
     info!("Spawning {}", n);
     for i in 0..n {
@@ -122,16 +116,48 @@ async fn producers(args: Vec<String>) {
     }
 }
 
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+struct Cli {
+    #[clap(subcommand)]
+    command: Option<Commands>,
+    #[clap(short, long)]
+    brokers: String,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Stress the tcp_server_listen_backlog setting
+    Connections {
+        #[clap(short, long)]
+        number: i32,
+    },
+    /// Creates a producer swarm
+    Producers {
+        #[clap(short, long)]
+        topic: String,
+        #[clap(short, long)]
+        count: usize,
+        #[clap(short, long)]
+        messages: usize,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let args: Vec<String> = std::env::args().collect();
-    let command = args[1].clone();
-    let trailing_args: Vec<String> = args[2..].to_vec();
-    match command.as_str() {
-        "connections" => connections(trailing_args).await,
-        "producers" => {
-            producers(trailing_args).await;
+    let cli = Cli::parse();
+    let brokers = cli.brokers;
+    match &cli.command {
+        Some(Commands::Connections { number }) => {
+            connections(brokers, *number).await;
+        }
+        Some(Commands::Producers {
+            topic,
+            producers_count,
+            messages,
+        }) => {
+            producers(brokers, topic.clone(), *messages, *producers_count).await;
         }
         _ => {
             unimplemented!();
