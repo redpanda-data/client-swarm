@@ -7,7 +7,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 
-use std::path::PathBuf;
+use futures::stream::TryStreamExt;
+use rdkafka::consumer::Consumer;
+use rdkafka::consumer::StreamConsumer;
+use rdkafka::message::BorrowedMessage;
+use rdkafka::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -116,6 +120,95 @@ async fn producers(brokers: String, topic: String, m: usize, n: usize) {
     }
 }
 
+// log every 10000 messages
+async fn record_borrowed_message_receipt(msg: &BorrowedMessage<'_>) {
+    if msg.offset() % 10000 == 0 {
+        debug!("Message received: {}", msg.offset());
+    }
+}
+
+async fn consume(
+    brokers: String,
+    topic: String,
+    group: String,
+    static_prefix: Option<String>,
+    properties: Vec<(String, String)>,
+    my_id: usize,
+) {
+    debug!("Consumer {} constructing", my_id);
+    let mut cfg: ClientConfig = ClientConfig::new();
+    // basic options
+    cfg.set("group.id", &group)
+        .set("bootstrap.servers", &brokers)
+        .set("enable.partition.eof", "false")
+        .set("socket.timeout.ms", "180000")
+        .set("enable.auto.commit", "true")
+        .set("auto.offset.reset", "earliest");
+
+    match static_prefix {
+        Some(prefix) => {
+            cfg.set(
+                "group.instance.id",
+                format!("swarm-consumer-{}-{}", prefix, my_id),
+            );
+        }
+        None => {}
+    }
+
+    // custom properties
+    for (k, v) in properties {
+        cfg.set(k, v);
+    }
+
+    let consumer: StreamConsumer = cfg.create().unwrap();
+
+    debug!("Consumer {} fetching", my_id);
+    consumer
+        .subscribe(&[&topic])
+        .expect("Can't subscribe to specified topic");
+
+    let stream_processor = consumer
+        .stream()
+        .try_for_each(|borrowed_message| async move {
+            record_borrowed_message_receipt(&borrowed_message).await;
+            return Ok(());
+        });
+
+    stream_processor.await.expect("stream processing failed");
+}
+
+/// Stress the system for very large numbers of consumers
+async fn consumers(
+    brokers: String,
+    topic: String,
+    group: String,
+    static_prefix: Option<String>,
+    n: usize,
+    properties: Vec<String>,
+) {
+    let mut kv_pairs = vec![];
+    for p in properties {
+        let parts = p.split("=").collect::<Vec<&str>>();
+        kv_pairs.push((parts[0].to_string(), parts[1].to_string()))
+    }
+    let mut tasks = vec![];
+    info!("Spawning {} consumers", n);
+    for i in 0..n {
+        tasks.push(tokio::spawn(consume(
+            brokers.clone(),
+            topic.clone(),
+            group.clone(),
+            static_prefix.clone(),
+            kv_pairs.clone(),
+            i,
+        )))
+    }
+
+    for t in tasks {
+        t.await.unwrap();
+    }
+}
+
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
@@ -141,6 +234,21 @@ enum Commands {
         #[clap(short, long)]
         messages: usize,
     },
+    /// Creates consumer swarm
+    Consumers {
+        #[clap(short, long)]
+        topic: String,
+        #[clap(short, long)]
+        group: String,
+        /// if set uses static group membership protocol
+        #[clap(short, long)]
+        static_prefix: Option<String>,
+        #[clap(short, long)]
+        count: usize,
+        // list of librdkafka consumer properties to set as `key=value` pairs
+        #[clap(short, long)]
+        properties: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -154,10 +262,27 @@ async fn main() {
         }
         Some(Commands::Producers {
             topic,
-            producers_count,
+            count,
             messages,
         }) => {
-            producers(brokers, topic.clone(), *messages, *producers_count).await;
+            producers(brokers, topic.clone(), *messages, *count).await;
+        }
+        Some(Commands::Consumers {
+            topic,
+            group,
+            static_prefix,
+            count,
+            properties,
+        }) => {
+            consumers(
+                brokers,
+                topic.clone(),
+                group.clone(),
+                static_prefix.clone(),
+                *count,
+                properties.clone(),
+            )
+            .await;
         }
         _ => {
             unimplemented!();
