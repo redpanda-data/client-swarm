@@ -77,11 +77,11 @@ async fn connections(addr_str: String, n: i32) {
 }
 
 fn split_properties(properties: Vec<String>) -> Vec<(String, String)> {
-    return properties.iter().map(
-        |p| p.split("=").collect::<Vec<&str>>()
-    ).map(
-        |parts| (parts[0].to_string(), parts[1].to_string())
-    ).collect();
+    return properties
+        .iter()
+        .map(|p| p.split("=").collect::<Vec<&str>>())
+        .map(|parts| (parts[0].to_string(), parts[1].to_string()))
+        .collect();
 }
 
 async fn produce(
@@ -141,11 +141,9 @@ async fn producers(brokers: String, topic: String, m: usize, n: usize, propertie
     }
 }
 
-
-
 struct ConsumeCounter {
     count: u64,
-    target_count: Option<u64>
+    target_count: Option<u64>,
 }
 
 /**
@@ -153,11 +151,14 @@ struct ConsumeCounter {
  * against an exit condition.
  */
 impl ConsumeCounter {
-    pub fn new(target_count:Option<u64>) -> ConsumeCounter {
-        ConsumeCounter{count: 0,target_count}
+    pub fn new(target_count: Option<u64>) -> ConsumeCounter {
+        ConsumeCounter {
+            count: 0,
+            target_count,
+        }
     }
 
-    pub fn record_borrowed_message_receipt(&mut self, msg: &BorrowedMessage<'_>) -> bool{
+    pub fn record_borrowed_message_receipt(&mut self, msg: &BorrowedMessage<'_>) -> bool {
         // log every 10000 messages
         if msg.offset() % 10000 == 0 {
             debug!("Message received: {}", msg.offset());
@@ -165,12 +166,12 @@ impl ConsumeCounter {
         self.count += 1;
         let c = match self.target_count {
             Some(i) => i,
-            None=>0
+            None => 0,
         };
         info!("Count {}/{}", self.count, c);
         match self.target_count {
-            None=>false,
-            Some(limit)=>self.count >= limit
+            None => false,
+            Some(limit) => self.count >= limit,
         }
     }
 }
@@ -182,7 +183,7 @@ async fn consume(
     static_prefix: Option<String>,
     properties: Vec<(String, String)>,
     my_id: usize,
-    counter: Arc<Mutex<ConsumeCounter>>
+    counter: Arc<Mutex<ConsumeCounter>>,
 ) {
     debug!("Consumer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
@@ -219,9 +220,11 @@ async fn consume(
     let mut stream = consumer.stream();
     loop {
         let item = stream.try_next().await;
-        let msg = match item.expect("Error reading from stream"){
+        let msg = match item.expect("Error reading from stream") {
             Some(msg) => msg,
-            None=>{continue;}
+            None => {
+                continue;
+            }
         };
 
         let mut counter_locked = counter.lock().unwrap();
@@ -256,7 +259,7 @@ async fn consumers(
             static_prefix.clone(),
             kv_pairs.clone(),
             i,
-            counter.clone()
+            counter.clone(),
         )))
     }
 
@@ -350,7 +353,7 @@ async fn main() {
                 group.clone(),
                 static_prefix.clone(),
                 *count,
-                 *messages,
+                *messages,
                 properties.clone(),
             )
             .await;
