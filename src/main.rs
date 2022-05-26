@@ -77,12 +77,11 @@ async fn connections(addr_str: String, n: i32) {
 }
 
 fn split_properties(properties: Vec<String>) -> Vec<(String, String)> {
-    let mut kv_pairs = vec![];
-    for p in properties {
-        let parts = p.split("=").collect::<Vec<&str>>();
-        kv_pairs.push((parts[0].to_string(), parts[1].to_string()))
-    }
-    return kv_pairs;
+    return properties.iter().map(
+        |p| p.split("=").collect::<Vec<&str>>()
+    ).map(
+        |parts| (parts[0].to_string(), parts[1].to_string())
+    ).collect();
 }
 
 async fn produce(
@@ -142,10 +141,37 @@ async fn producers(brokers: String, topic: String, m: usize, n: usize, propertie
     }
 }
 
-// log every 10000 messages
-async fn record_borrowed_message_receipt(msg: &BorrowedMessage<'_>) {
-    if msg.offset() % 10000 == 0 {
-        debug!("Message received: {}", msg.offset());
+
+
+struct ConsumeCounter {
+    count: u64,
+    target_count: Option<u64>
+}
+
+/**
+ * Shared state between the consume tasks, to track a global count + check it
+ * against an exit condition.
+ */
+impl ConsumeCounter {
+    pub fn new(target_count:Option<u64>) -> ConsumeCounter {
+        ConsumeCounter{count: 0,target_count}
+    }
+
+    pub fn record_borrowed_message_receipt(&mut self, msg: &BorrowedMessage<'_>) -> bool{
+        // log every 10000 messages
+        if msg.offset() % 10000 == 0 {
+            debug!("Message received: {}", msg.offset());
+        }
+        self.count += 1;
+        let c = match self.target_count {
+            Some(i) => i,
+            None=>0
+        };
+        info!("Count {}/{}", self.count, c);
+        match self.target_count {
+            None=>false,
+            Some(limit)=>self.count >= limit
+        }
     }
 }
 
@@ -156,6 +182,7 @@ async fn consume(
     static_prefix: Option<String>,
     properties: Vec<(String, String)>,
     my_id: usize,
+    counter: Arc<Mutex<ConsumeCounter>>
 ) {
     debug!("Consumer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
@@ -189,14 +216,20 @@ async fn consume(
         .subscribe(&[&topic])
         .expect("Can't subscribe to specified topic");
 
-    let stream_processor = consumer
-        .stream()
-        .try_for_each(|borrowed_message| async move {
-            record_borrowed_message_receipt(&borrowed_message).await;
-            return Ok(());
-        });
+    let mut stream = consumer.stream();
+    loop {
+        let item = stream.try_next().await;
+        let msg = match item.expect("Error reading from stream"){
+            Some(msg) => msg,
+            None=>{continue;}
+        };
 
-    stream_processor.await.expect("stream processing failed");
+        let mut counter_locked = counter.lock().unwrap();
+        let complete = (*counter_locked).record_borrowed_message_receipt(&msg);
+        if complete {
+            break;
+        }
+    }
 }
 
 /// Stress the system for very large numbers of consumers
@@ -206,11 +239,15 @@ async fn consumers(
     group: String,
     static_prefix: Option<String>,
     n: usize,
+    messages: Option<u64>,
     properties: Vec<String>,
 ) {
     let kv_pairs = split_properties(properties);
     let mut tasks = vec![];
     info!("Spawning {} consumers", n);
+
+    let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages)));
+
     for i in 0..n {
         tasks.push(tokio::spawn(consume(
             brokers.clone(),
@@ -219,6 +256,7 @@ async fn consumers(
             static_prefix.clone(),
             kv_pairs.clone(),
             i,
+            counter.clone()
         )))
     }
 
@@ -269,6 +307,8 @@ enum Commands {
         // list of librdkafka consumer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
+        #[clap(short, long)]
+        messages: Option<u64>,
     },
 }
 
@@ -302,6 +342,7 @@ async fn main() {
             static_prefix,
             count,
             properties,
+            messages,
         }) => {
             consumers(
                 brokers,
@@ -309,6 +350,7 @@ async fn main() {
                 group.clone(),
                 static_prefix.clone(),
                 *count,
+                 *messages,
                 properties.clone(),
             )
             .await;
