@@ -76,16 +76,31 @@ async fn connections(addr_str: String, n: i32) {
     }
 }
 
-async fn produce(brokers: String, topic: String, my_id: usize, m: usize) {
+fn split_properties(properties: Vec<String>) -> Vec<(String, String)> {
+    let mut kv_pairs = vec![];
+    for p in properties {
+        let parts = p.split("=").collect::<Vec<&str>>();
+        kv_pairs.push((parts[0].to_string(), parts[1].to_string()))
+    }
+    return kv_pairs;
+}
+
+async fn produce(
+    brokers: String,
+    topic: String,
+    my_id: usize,
+    m: usize,
+    properties: Vec<(String, String)>,
+) {
     debug!("Producer {} constructing", my_id);
-    let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &brokers)
-        .set("linger.ms", "100")
-        .set("retries", "0")
-        .set("batch.size", "16777216")
-        .set("acks", "-1")
-        .create()
-        .unwrap();
+    let mut cfg: ClientConfig = ClientConfig::new();
+    cfg.set("bootstrap.servers", &brokers);
+
+    // custom properties
+    for (k, v) in properties {
+        cfg.set(k, v);
+    }
+    let producer: FutureProducer = cfg.create().unwrap();
 
     let mut payload: Vec<u8> = vec![0x0f; 0x7fff];
     rand::thread_rng().fill_bytes(&mut payload);
@@ -108,11 +123,18 @@ async fn produce(brokers: String, topic: String, my_id: usize, m: usize) {
 }
 
 /// Stress the system for very large numbers of producers
-async fn producers(brokers: String, topic: String, m: usize, n: usize) {
+async fn producers(brokers: String, topic: String, m: usize, n: usize, properties: Vec<String>) {
     let mut tasks = vec![];
+    let kv_pairs = split_properties(properties);
     info!("Spawning {}", n);
     for i in 0..n {
-        tasks.push(tokio::spawn(produce(brokers.clone(), topic.clone(), i, m)))
+        tasks.push(tokio::spawn(produce(
+            brokers.clone(),
+            topic.clone(),
+            i,
+            m,
+            kv_pairs.clone(),
+        )))
     }
 
     for t in tasks {
@@ -186,11 +208,7 @@ async fn consumers(
     n: usize,
     properties: Vec<String>,
 ) {
-    let mut kv_pairs = vec![];
-    for p in properties {
-        let parts = p.split("=").collect::<Vec<&str>>();
-        kv_pairs.push((parts[0].to_string(), parts[1].to_string()))
-    }
+    let kv_pairs = split_properties(properties);
     let mut tasks = vec![];
     info!("Spawning {} consumers", n);
     for i in 0..n {
@@ -233,6 +251,9 @@ enum Commands {
         count: usize,
         #[clap(short, long)]
         messages: usize,
+        // list of librdkafka producer properties to set as `key=value` pairs
+        #[clap(short, long)]
+        properties: Vec<String>,
     },
     /// Creates consumer swarm
     Consumers {
@@ -264,8 +285,16 @@ async fn main() {
             topic,
             count,
             messages,
+            properties,
         }) => {
-            producers(brokers, topic.clone(), *messages, *count).await;
+            producers(
+                brokers,
+                topic.clone(),
+                *messages,
+                *count,
+                properties.clone(),
+            )
+            .await;
         }
         Some(Commands::Consumers {
             topic,
