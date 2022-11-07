@@ -90,6 +90,7 @@ async fn produce(
     my_id: usize,
     m: usize,
     properties: Vec<(String, String)>,
+    timeout: Duration,
 ) {
     debug!("Producer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
@@ -110,7 +111,7 @@ async fn produce(
         let sz = (rand::thread_rng().next_u32() & 0x7fff) as usize;
         let fut = producer.send(
             FutureRecord::to(&topic).key(&key).payload(&payload[0..sz]),
-            Duration::from_millis(1000),
+            timeout,
         );
         debug!("Producer {} waiting", my_id);
         match fut.await {
@@ -122,7 +123,7 @@ async fn produce(
 }
 
 /// Stress the system for very large numbers of producers
-async fn producers(brokers: String, topic: String, m: usize, n: usize, properties: Vec<String>) {
+async fn producers(brokers: String, topic: String, m: usize, n: usize, properties: Vec<String>, timeout: Duration) {
     let mut tasks = vec![];
     let kv_pairs = split_properties(properties);
     info!("Spawning {}", n);
@@ -133,6 +134,7 @@ async fn producers(brokers: String, topic: String, m: usize, n: usize, propertie
             i,
             m,
             kv_pairs.clone(),
+            timeout,
         )))
     }
 
@@ -295,6 +297,8 @@ enum Commands {
         // list of librdkafka producer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
+        #[clap(short, long, default_value_t = 1000)]
+        timeout_ms: u64,
     },
     /// Creates consumer swarm
     Consumers {
@@ -329,6 +333,7 @@ async fn main() {
             count,
             messages,
             properties,
+            timeout_ms,
         }) => {
             producers(
                 brokers,
@@ -336,6 +341,7 @@ async fn main() {
                 *messages,
                 *count,
                 properties.clone(),
+                Duration::from_millis(*timeout_ms),
             )
             .await;
         }
