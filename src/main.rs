@@ -14,7 +14,7 @@ use rdkafka::message::BorrowedMessage;
 use rdkafka::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 
@@ -84,6 +84,12 @@ fn split_properties(properties: Vec<String>) -> Vec<(String, String)> {
         .collect();
 }
 
+struct ProducerStats {
+    rate: u64,
+    total_size: usize,
+    errors: u32,
+}
+
 async fn produce(
     brokers: String,
     topic: String,
@@ -91,7 +97,7 @@ async fn produce(
     m: usize,
     properties: Vec<(String, String)>,
     timeout: Duration,
-) {
+) -> ProducerStats {
     debug!("Producer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
     cfg.set("bootstrap.servers", &brokers);
@@ -106,26 +112,52 @@ async fn produce(
     rand::thread_rng().fill_bytes(&mut payload);
     debug!("Producer {} sending", my_id);
 
+    let start_time = Instant::now();
+    let mut total_size: usize = 0;
+    let mut errors: u32 = 0;
+
     for i in 0..m {
         let key = format!("{:#010x}", rand::thread_rng().next_u32() & 0x6ffff);
         let sz = (rand::thread_rng().next_u32() & 0x7fff) as usize;
+        total_size += sz;
         let fut = producer.send(
             FutureRecord::to(&topic).key(&key).payload(&payload[0..sz]),
             timeout,
         );
         debug!("Producer {} waiting", my_id);
         match fut.await {
-            Err((e, _msg)) => warn!("Error on producer {} {}/{}: {}", my_id, i, m, e),
+            Err((e, _msg)) => {
+                warn!("Error on producer {} {}/{}: {}", my_id, i, m, e);
+                errors += 1;
+            }
             Ok(_) => {}
         }
     }
-    info!("Producer {} complete", my_id);
+
+    let total_time = start_time.elapsed();
+    let rate = total_size as u64 / total_time.as_secs();
+
+    info!("Producer {} complete with rate {} bytes/s", my_id, rate);
+
+    ProducerStats {
+        rate,
+        total_size,
+        errors,
+    }
 }
 
 /// Stress the system for very large numbers of producers
-async fn producers(brokers: String, topic: String, m: usize, n: usize, properties: Vec<String>, timeout: Duration) {
+async fn producers(
+    brokers: String,
+    topic: String,
+    m: usize,
+    n: usize,
+    properties: Vec<String>,
+    timeout: Duration,
+) {
     let mut tasks = vec![];
     let kv_pairs = split_properties(properties);
+    let start_time = Instant::now();
     info!("Spawning {}", n);
     for i in 0..n {
         tasks.push(tokio::spawn(produce(
@@ -138,9 +170,33 @@ async fn producers(brokers: String, topic: String, m: usize, n: usize, propertie
         )))
     }
 
+    let mut results = vec![];
+    let mut total_size: usize = 0;
     for t in tasks {
-        t.await.unwrap();
+        let produce_stats = t.await.unwrap();
+        results.push(produce_stats.rate);
+        total_size += produce_stats.total_size;
     }
+
+    let total_time = start_time.elapsed();
+
+    if !results.is_empty() {
+        let min_result = *results.iter().min().unwrap();
+        let max_result = *results.iter().max().unwrap();
+        let avg_result = results.iter().sum::<u64>() / results.len() as u64;
+        info!(
+            "Producer rates: [min={}, max={}, avg={}] bytes/s",
+            min_result, max_result, avg_result
+        );
+
+        let rate = total_size as u64 / total_time.as_secs();
+        // Depending on how many producers are running in parallel
+        // the global produce rate could be more or less even if the
+        // produce rate for individual producers remains the same.
+        info!("Global produce rate: {} bytes/s", rate);
+    }
+
+    info!("All producers complete");
 }
 
 struct ConsumeCounter {
