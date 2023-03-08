@@ -175,6 +175,9 @@ async fn producers(
     for t in tasks {
         let produce_stats = t.await.unwrap();
         results.push(produce_stats.rate);
+        if produce_stats.errors > 0 {
+            warn!("Producer had {} errors", produce_stats.errors);
+        }
         total_size += produce_stats.total_size;
     }
 
