@@ -7,7 +7,7 @@ edition = "2018"
 
 [dependencies]
 tokio = { version = "1.18.5", features = ["full"] }
-rdkafka = { version = "0.28.0", features = ["cmake-build"]}
+rdkafka = { version = "0.28.0", features = ["cmake-build", "zstd-pkg-config"]}
 async-std = { version = "1.9.0", features = ["attributes"] }
 futures = { version = "0.3", default-features = false }
 clap = { version = "3.1.18", features = ["derive"] }
