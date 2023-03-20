@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use rand::seq::SliceRandom;
 use lazy_static::lazy_static;
+use std::process;
 
 use clap::{Parser, Subcommand};
 
@@ -98,6 +99,7 @@ struct ProducerStats {
     errors: u32,
 }
 
+#[derive(Clone)]
 struct Payload {
     compressible: bool,
     min_size: usize,
@@ -186,7 +188,7 @@ async fn producers(
     n: usize,
     properties: Vec<String>,
     compression_type: Option<String>,
-    compressible_payload: bool,
+    payload: Payload,
     timeout: Duration,
 ) {
     let mut tasks = vec![];
@@ -211,11 +213,7 @@ async fn producers(
             i,
             m,
             cfg_pairs,
-            Payload {
-               compressible: compressible_payload,
-               min_size: 16384,
-               max_size: 16384,
-            },
+            payload.clone(),
             timeout,
         )))
     }
@@ -411,6 +409,10 @@ enum Commands {
         #[clap(short, long)]
         compression_type: Option<String>,
         #[clap(short, long)]
+        min_record_size: Option<usize>,
+        #[clap(short, long, default_value_t = 16384)]
+        max_record_size: usize,
+        #[clap(short, long)]
         compressible_payload: bool,
     },
     /// Creates consumer swarm
@@ -448,8 +450,18 @@ async fn main() {
             properties,
             compression_type,
             compressible_payload,
+            min_record_size,
+            max_record_size,
             timeout_ms,
         }) => {
+            let min_size = min_record_size.unwrap_or(*max_record_size);
+            if let Some(min) = min_record_size {
+                if max_record_size < min {
+                    error!("Max record size must be >= min record size");
+                    process::exit(-1);
+                }
+            }
+
             producers(
                 brokers,
                 topic.clone(),
@@ -457,7 +469,11 @@ async fn main() {
                 *count,
                 properties.clone(),
                 (*compression_type).clone(),
-                compressible_payload.clone(),
+                Payload {
+                    compressible: *compressible_payload,
+                    min_size,
+                    max_size: *max_record_size,
+                },
                 Duration::from_millis(*timeout_ms),
             )
             .await;
