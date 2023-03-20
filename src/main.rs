@@ -15,6 +15,8 @@ use rdkafka::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use rand::seq::SliceRandom;
+use lazy_static::lazy_static;
 
 use clap::{Parser, Subcommand};
 
@@ -27,6 +29,12 @@ use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use log::*;
+
+const MAX_COMPRESSIBLE_PAYLOAD : usize = 128 * 1024 * 1024;
+
+lazy_static! {
+    static ref COMPRESSIBLE_PAYLOAD: [u8; MAX_COMPRESSIBLE_PAYLOAD] = [0x0f; MAX_COMPRESSIBLE_PAYLOAD];
+}
 
 /// Stress the tcp_server_listen_backlog setting
 /// A system with a small backlog will experience errors here: a system with
@@ -90,17 +98,25 @@ struct ProducerStats {
     errors: u32,
 }
 
+struct Payload {
+    compressible: bool,
+    min_size: usize,
+    max_size: usize,
+}
+
 async fn produce(
     brokers: String,
     topic: String,
     my_id: usize,
     m: usize,
     properties: Vec<(String, String)>,
+    payload: Payload,
     timeout: Duration,
 ) -> ProducerStats {
     debug!("Producer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
     cfg.set("bootstrap.servers", &brokers);
+    cfg.set("message.max.bytes", "1000000000");
 
     // custom properties
     for (k, v) in properties {
@@ -108,8 +124,13 @@ async fn produce(
     }
     let producer: FutureProducer = cfg.create().unwrap();
 
-    let mut payload: Vec<u8> = vec![0x0f; 0x7fff];
-    rand::thread_rng().fill_bytes(&mut payload);
+
+    let mut local_payload: Option<Vec<u8>> = None;
+    if !payload.compressible {
+        local_payload = Some(vec![0x0f; payload.max_size]);
+        rand::thread_rng().fill_bytes(local_payload.as_mut().unwrap());
+    }
+
     debug!("Producer {} sending", my_id);
 
     let start_time = Instant::now();
@@ -118,10 +139,21 @@ async fn produce(
 
     for i in 0..m {
         let key = format!("{:#010x}", rand::thread_rng().next_u32() & 0x6ffff);
-        let sz = (rand::thread_rng().next_u32() & 0x7fff) as usize;
+        let sz = if payload.min_size != payload.max_size {
+            payload.min_size + rand::thread_rng().next_u32() as usize % (payload.max_size - payload.min_size)
+        } else {
+            payload.max_size
+        };
+
+        let payload_slice : &[u8] = if payload.compressible{
+            &COMPRESSIBLE_PAYLOAD.as_slice()[0..sz]
+        } else {
+            &local_payload.as_ref().unwrap()[0..sz]
+        };
+
         total_size += sz;
         let fut = producer.send(
-            FutureRecord::to(&topic).key(&key).payload(&payload[0..sz]),
+            FutureRecord::to(&topic).key(&key).payload(payload_slice),
             timeout,
         );
         debug!("Producer {} waiting", my_id);
@@ -153,6 +185,8 @@ async fn producers(
     m: usize,
     n: usize,
     properties: Vec<String>,
+    compression_type: Option<String>,
+    compressible_payload: bool,
     timeout: Duration,
 ) {
     let mut tasks = vec![];
@@ -160,12 +194,28 @@ async fn producers(
     let start_time = Instant::now();
     info!("Spawning {}", n);
     for i in 0..n {
+        let mut cfg_pairs = kv_pairs.clone();
+        if let Some(c_type) = &compression_type {
+            if c_type == "mixed" {
+                let types : Vec<&str> = vec!["gzip", "lz4", "snappy", "zstd"];
+
+                cfg_pairs.push(("compression.type".to_string(), types.choose(&mut rand::thread_rng()).unwrap().to_string()));
+            } else {
+                cfg_pairs.push(("compression.type".to_string(), c_type.clone()));
+            }
+        }
+
         tasks.push(tokio::spawn(produce(
             brokers.clone(),
             topic.clone(),
             i,
             m,
-            kv_pairs.clone(),
+            cfg_pairs,
+            Payload {
+               compressible: compressible_payload,
+               min_size: 16384,
+               max_size: 16384,
+            },
             timeout,
         )))
     }
@@ -358,6 +408,10 @@ enum Commands {
         properties: Vec<String>,
         #[clap(short, long, default_value_t = 1000)]
         timeout_ms: u64,
+        #[clap(short, long)]
+        compression_type: Option<String>,
+        #[clap(short, long)]
+        compressible_payload: bool,
     },
     /// Creates consumer swarm
     Consumers {
@@ -392,6 +446,8 @@ async fn main() {
             count,
             messages,
             properties,
+            compression_type,
+            compressible_payload,
             timeout_ms,
         }) => {
             producers(
@@ -400,6 +456,8 @@ async fn main() {
                 *messages,
                 *count,
                 properties.clone(),
+                (*compression_type).clone(),
+                compressible_payload.clone(),
                 Duration::from_millis(*timeout_ms),
             )
             .await;

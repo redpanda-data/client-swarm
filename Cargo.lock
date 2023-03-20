@@ -253,6 +253,7 @@ dependencies = [
  "clap",
  "env_logger",
  "futures",
+ "lazy_static",
  "log",
  "rand",
  "rdkafka",
