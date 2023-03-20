@@ -406,13 +406,13 @@ enum Commands {
         properties: Vec<String>,
         #[clap(short, long, default_value_t = 1000)]
         timeout_ms: u64,
-        #[clap(short, long)]
+        #[clap(long)]
         compression_type: Option<String>,
-        #[clap(short, long)]
+        #[clap(long)]
         min_record_size: Option<usize>,
-        #[clap(short, long, default_value_t = 16384)]
+        #[clap(long, default_value_t = 16384)]
         max_record_size: usize,
-        #[clap(short, long)]
+        #[clap(long)]
         compressible_payload: bool,
     },
     /// Creates consumer swarm
