@@ -101,6 +101,7 @@ struct ProducerStats {
 
 #[derive(Clone)]
 struct Payload {
+    key_range: u64,
     compressible: bool,
     min_size: usize,
     max_size: usize,
@@ -140,7 +141,7 @@ async fn produce(
     let mut errors: u32 = 0;
 
     for i in 0..m {
-        let key = format!("{:#010x}", rand::thread_rng().next_u32() & 0x6ffff);
+        let key = format!("{:#016x}", rand::thread_rng().next_u64() % payload.key_range);
         let sz = if payload.min_size != payload.max_size {
             payload.min_size + rand::thread_rng().next_u32() as usize % (payload.max_size - payload.min_size)
         } else {
@@ -414,6 +415,8 @@ enum Commands {
         max_record_size: usize,
         #[clap(long)]
         compressible_payload: bool,
+        #[clap(long, default_value_t = 1000)]
+        keys: u64,
     },
     /// Creates consumer swarm
     Consumers {
@@ -452,6 +455,7 @@ async fn main() {
             compressible_payload,
             min_record_size,
             max_record_size,
+            keys,
             timeout_ms,
         }) => {
             let min_size = min_record_size.unwrap_or(*max_record_size);
@@ -470,6 +474,7 @@ async fn main() {
                 properties.clone(),
                 (*compression_type).clone(),
                 Payload {
+                    key_range: *keys,
                     compressible: *compressible_payload,
                     min_size,
                     max_size: *max_record_size,
