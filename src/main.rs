@@ -7,6 +7,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 
+use std::num::NonZeroU32;
 use futures::stream::TryStreamExt;
 use rdkafka::consumer::Consumer;
 use rdkafka::consumer::StreamConsumer;
@@ -20,6 +21,7 @@ use lazy_static::lazy_static;
 use std::process;
 
 use clap::{Parser, Subcommand};
+use governor::{Quota, RateLimiter};
 
 use rand::RngCore;
 use tokio;
@@ -112,6 +114,7 @@ async fn produce(
     topic: String,
     my_id: usize,
     m: usize,
+    messages_per_second: Option<NonZeroU32>,
     properties: Vec<(String, String)>,
     payload: Payload,
     timeout: Duration,
@@ -140,7 +143,19 @@ async fn produce(
     let mut total_size: usize = 0;
     let mut errors: u32 = 0;
 
+    let mut rate_limit= if messages_per_second.is_some() {
+        Option::Some(RateLimiter::direct(Quota::per_second(
+            messages_per_second.unwrap())))
+    } else {
+        None
+    };
+
     for i in 0..m {
+        if let Some(rl) = &mut rate_limit {
+            rl.until_ready().await;
+        }
+
+
         let key = format!("{:#016x}", rand::thread_rng().next_u64() % payload.key_range);
         let sz = if payload.min_size != payload.max_size {
             payload.min_size + rand::thread_rng().next_u32() as usize % (payload.max_size - payload.min_size)
@@ -186,6 +201,7 @@ async fn producers(
     brokers: String,
     topic: String,
     m: usize,
+    messages_per_second: Option<NonZeroU32>,
     n: usize,
     properties: Vec<String>,
     compression_type: Option<String>,
@@ -213,6 +229,7 @@ async fn producers(
             topic.clone(),
             i,
             m,
+            messages_per_second,
             cfg_pairs,
             payload.clone(),
             timeout,
@@ -402,6 +419,8 @@ enum Commands {
         count: usize,
         #[clap(short, long)]
         messages: usize,
+        #[clap(short, long, default_value_t = 0)]
+        messages_per_second: u32,
         // list of librdkafka producer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
@@ -450,6 +469,7 @@ async fn main() {
             topic,
             count,
             messages,
+            messages_per_second,
             properties,
             compression_type,
             compressible_payload,
@@ -466,10 +486,14 @@ async fn main() {
                 }
             }
 
+            // Default arg value 0 will return None here (no rate limiting)
+            let mps_opt = NonZeroU32::new(*messages_per_second);
+
             producers(
                 brokers,
                 topic.clone(),
                 *messages,
+                mps_opt,
                 *count,
                 properties.clone(),
                 (*compression_type).clone(),
