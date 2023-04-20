@@ -125,8 +125,14 @@ async fn produce(
     cfg.set("bootstrap.servers", &brokers);
     cfg.set("message.max.bytes", "1000000000");
 
+    // Stash compression mode for use in log messages
+    let mut compression: Option<String> = None;
+
     // custom properties
     for (k, v) in properties {
+        if k == "compression.type" {
+            compression = Some(v.clone());
+        }
         cfg.set(k, v);
     }
     let producer: FutureProducer = cfg.create().unwrap();
@@ -181,7 +187,14 @@ async fn produce(
         debug!("Producer {} waiting", my_id);
         match fut.await {
             Err((e, _msg)) => {
-                warn!("Error on producer {} {}/{}: {}", my_id, i, m, e);
+                let compression: &str = compression
+                    .as_ref()
+                    .map(|s: &String| s.as_str())
+                    .unwrap_or("none");
+                warn!(
+                    "Error on producer {} {}/{}, producing {} bytes, compression={}, compressible={} : {}",
+                    my_id, i, m, sz, compression, payload.compressible, e
+                );
                 errors += 1;
             }
             Ok(_) => {}
@@ -245,11 +258,12 @@ async fn producers(
 
     let mut results = vec![];
     let mut total_size: usize = 0;
-    for t in tasks {
+    for (i, t) in tasks.into_iter().enumerate() {
+        info!("Joining producer {}...", i);
         let produce_stats = t.await.unwrap();
         results.push(produce_stats.rate);
         if produce_stats.errors > 0 {
-            warn!("Producer had {} errors", produce_stats.errors);
+            warn!("Producer {}  had {} errors", i, produce_stats.errors);
         }
         total_size += produce_stats.total_size;
     }
