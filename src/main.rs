@@ -7,18 +7,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 
-use std::num::NonZeroU32;
 use futures::stream::TryStreamExt;
+use lazy_static::lazy_static;
+use rand::seq::SliceRandom;
 use rdkafka::consumer::Consumer;
 use rdkafka::consumer::StreamConsumer;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::Message;
+use std::num::NonZeroU32;
+use std::process;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use rand::seq::SliceRandom;
-use lazy_static::lazy_static;
-use std::process;
 
 use clap::{Parser, Subcommand};
 use governor::{Quota, RateLimiter};
@@ -33,10 +33,11 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use log::*;
 
-const MAX_COMPRESSIBLE_PAYLOAD : usize = 128 * 1024 * 1024;
+const MAX_COMPRESSIBLE_PAYLOAD: usize = 128 * 1024 * 1024;
 
 lazy_static! {
-    static ref COMPRESSIBLE_PAYLOAD: [u8; MAX_COMPRESSIBLE_PAYLOAD] = [0x0f; MAX_COMPRESSIBLE_PAYLOAD];
+    static ref COMPRESSIBLE_PAYLOAD: [u8; MAX_COMPRESSIBLE_PAYLOAD] =
+        [0x0f; MAX_COMPRESSIBLE_PAYLOAD];
 }
 
 /// Stress the tcp_server_listen_backlog setting
@@ -130,7 +131,6 @@ async fn produce(
     }
     let producer: FutureProducer = cfg.create().unwrap();
 
-
     let mut local_payload: Option<Vec<u8>> = None;
     if !payload.compressible {
         local_payload = Some(vec![0x0f; payload.max_size]);
@@ -143,9 +143,10 @@ async fn produce(
     let mut total_size: usize = 0;
     let mut errors: u32 = 0;
 
-    let mut rate_limit= if messages_per_second.is_some() {
+    let mut rate_limit = if messages_per_second.is_some() {
         Option::Some(RateLimiter::direct(Quota::per_second(
-            messages_per_second.unwrap())))
+            messages_per_second.unwrap(),
+        )))
     } else {
         None
     };
@@ -155,15 +156,18 @@ async fn produce(
             rl.until_ready().await;
         }
 
-
-        let key = format!("{:#016x}", rand::thread_rng().next_u64() % payload.key_range);
+        let key = format!(
+            "{:#016x}",
+            rand::thread_rng().next_u64() % payload.key_range
+        );
         let sz = if payload.min_size != payload.max_size {
-            payload.min_size + rand::thread_rng().next_u32() as usize % (payload.max_size - payload.min_size)
+            payload.min_size
+                + rand::thread_rng().next_u32() as usize % (payload.max_size - payload.min_size)
         } else {
             payload.max_size
         };
 
-        let payload_slice : &[u8] = if payload.compressible{
+        let payload_slice: &[u8] = if payload.compressible {
             &COMPRESSIBLE_PAYLOAD.as_slice()[0..sz]
         } else {
             &local_payload.as_ref().unwrap()[0..sz]
@@ -216,9 +220,12 @@ async fn producers(
         let mut cfg_pairs = kv_pairs.clone();
         if let Some(c_type) = &compression_type {
             if c_type == "mixed" {
-                let types : Vec<&str> = vec!["gzip", "lz4", "snappy", "zstd"];
+                let types: Vec<&str> = vec!["gzip", "lz4", "snappy", "zstd"];
 
-                cfg_pairs.push(("compression.type".to_string(), types.choose(&mut rand::thread_rng()).unwrap().to_string()));
+                cfg_pairs.push((
+                    "compression.type".to_string(),
+                    types.choose(&mut rand::thread_rng()).unwrap().to_string(),
+                ));
             } else {
                 cfg_pairs.push(("compression.type".to_string(), c_type.clone()));
             }
