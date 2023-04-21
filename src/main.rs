@@ -8,18 +8,20 @@
 // by the Apache License, Version 2.0
 
 use futures::stream::TryStreamExt;
+use lazy_static::lazy_static;
+use rand::seq::SliceRandom;
 use rdkafka::consumer::Consumer;
 use rdkafka::consumer::StreamConsumer;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::Message;
+use std::num::NonZeroU32;
+use std::process;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use rand::seq::SliceRandom;
-use lazy_static::lazy_static;
-use std::process;
 
 use clap::{Parser, Subcommand};
+use governor::{Quota, RateLimiter};
 
 use rand::RngCore;
 use tokio;
@@ -31,10 +33,11 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use log::*;
 
-const MAX_COMPRESSIBLE_PAYLOAD : usize = 128 * 1024 * 1024;
+const MAX_COMPRESSIBLE_PAYLOAD: usize = 128 * 1024 * 1024;
 
 lazy_static! {
-    static ref COMPRESSIBLE_PAYLOAD: [u8; MAX_COMPRESSIBLE_PAYLOAD] = [0x0f; MAX_COMPRESSIBLE_PAYLOAD];
+    static ref COMPRESSIBLE_PAYLOAD: [u8; MAX_COMPRESSIBLE_PAYLOAD] =
+        [0x0f; MAX_COMPRESSIBLE_PAYLOAD];
 }
 
 /// Stress the tcp_server_listen_backlog setting
@@ -112,6 +115,7 @@ async fn produce(
     topic: String,
     my_id: usize,
     m: usize,
+    messages_per_second: Option<NonZeroU32>,
     properties: Vec<(String, String)>,
     payload: Payload,
     timeout: Duration,
@@ -121,12 +125,17 @@ async fn produce(
     cfg.set("bootstrap.servers", &brokers);
     cfg.set("message.max.bytes", "1000000000");
 
+    // Stash compression mode for use in log messages
+    let mut compression: Option<String> = None;
+
     // custom properties
     for (k, v) in properties {
+        if k == "compression.type" {
+            compression = Some(v.clone());
+        }
         cfg.set(k, v);
     }
     let producer: FutureProducer = cfg.create().unwrap();
-
 
     let mut local_payload: Option<Vec<u8>> = None;
     if !payload.compressible {
@@ -140,15 +149,31 @@ async fn produce(
     let mut total_size: usize = 0;
     let mut errors: u32 = 0;
 
+    let mut rate_limit = if messages_per_second.is_some() {
+        Option::Some(RateLimiter::direct(Quota::per_second(
+            messages_per_second.unwrap(),
+        )))
+    } else {
+        None
+    };
+
     for i in 0..m {
-        let key = format!("{:#016x}", rand::thread_rng().next_u64() % payload.key_range);
+        if let Some(rl) = &mut rate_limit {
+            rl.until_ready().await;
+        }
+
+        let key = format!(
+            "{:#016x}",
+            rand::thread_rng().next_u64() % payload.key_range
+        );
         let sz = if payload.min_size != payload.max_size {
-            payload.min_size + rand::thread_rng().next_u32() as usize % (payload.max_size - payload.min_size)
+            payload.min_size
+                + rand::thread_rng().next_u32() as usize % (payload.max_size - payload.min_size)
         } else {
             payload.max_size
         };
 
-        let payload_slice : &[u8] = if payload.compressible{
+        let payload_slice: &[u8] = if payload.compressible {
             &COMPRESSIBLE_PAYLOAD.as_slice()[0..sz]
         } else {
             &local_payload.as_ref().unwrap()[0..sz]
@@ -162,7 +187,14 @@ async fn produce(
         debug!("Producer {} waiting", my_id);
         match fut.await {
             Err((e, _msg)) => {
-                warn!("Error on producer {} {}/{}: {}", my_id, i, m, e);
+                let compression: &str = compression
+                    .as_ref()
+                    .map(|s: &String| s.as_str())
+                    .unwrap_or("none");
+                warn!(
+                    "Error on producer {} {}/{}, producing {} bytes, compression={}, compressible={} : {}",
+                    my_id, i, m, sz, compression, payload.compressible, e
+                );
                 errors += 1;
             }
             Ok(_) => {}
@@ -186,6 +218,7 @@ async fn producers(
     brokers: String,
     topic: String,
     m: usize,
+    messages_per_second: Option<NonZeroU32>,
     n: usize,
     properties: Vec<String>,
     compression_type: Option<String>,
@@ -200,9 +233,12 @@ async fn producers(
         let mut cfg_pairs = kv_pairs.clone();
         if let Some(c_type) = &compression_type {
             if c_type == "mixed" {
-                let types : Vec<&str> = vec!["gzip", "lz4", "snappy", "zstd"];
+                let types: Vec<&str> = vec!["gzip", "lz4", "snappy", "zstd"];
 
-                cfg_pairs.push(("compression.type".to_string(), types.choose(&mut rand::thread_rng()).unwrap().to_string()));
+                cfg_pairs.push((
+                    "compression.type".to_string(),
+                    types.choose(&mut rand::thread_rng()).unwrap().to_string(),
+                ));
             } else {
                 cfg_pairs.push(("compression.type".to_string(), c_type.clone()));
             }
@@ -213,6 +249,7 @@ async fn producers(
             topic.clone(),
             i,
             m,
+            messages_per_second,
             cfg_pairs,
             payload.clone(),
             timeout,
@@ -221,11 +258,12 @@ async fn producers(
 
     let mut results = vec![];
     let mut total_size: usize = 0;
-    for t in tasks {
+    for (i, t) in tasks.into_iter().enumerate() {
+        info!("Joining producer {}...", i);
         let produce_stats = t.await.unwrap();
         results.push(produce_stats.rate);
         if produce_stats.errors > 0 {
-            warn!("Producer had {} errors", produce_stats.errors);
+            warn!("Producer {}  had {} errors", i, produce_stats.errors);
         }
         total_size += produce_stats.total_size;
     }
@@ -402,6 +440,8 @@ enum Commands {
         count: usize,
         #[clap(short, long)]
         messages: usize,
+        #[clap(short, long, default_value_t = 0)]
+        messages_per_second: u32,
         // list of librdkafka producer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
@@ -450,6 +490,7 @@ async fn main() {
             topic,
             count,
             messages,
+            messages_per_second,
             properties,
             compression_type,
             compressible_payload,
@@ -466,10 +507,14 @@ async fn main() {
                 }
             }
 
+            // Default arg value 0 will return None here (no rate limiting)
+            let mps_opt = NonZeroU32::new(*messages_per_second);
+
             producers(
                 brokers,
                 topic.clone(),
                 *messages,
+                mps_opt,
                 *count,
                 properties.clone(),
                 (*compression_type).clone(),
