@@ -340,8 +340,12 @@ async fn consume(
         .set("bootstrap.servers", &brokers)
         .set("enable.partition.eof", "false")
         .set("socket.timeout.ms", "180000")
-        .set("enable.auto.commit", "true")
-        .set("auto.offset.reset", "earliest");
+        .set("enable.auto.commit", "true");
+
+    let offset_reset_key = "auto.offset.reset";
+    if !properties.iter().any(|(key, _)| key == offset_reset_key) {
+        cfg.set(offset_reset_key, "earliest");
+    }
 
     match static_prefix {
         Some(prefix) => {
