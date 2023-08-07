@@ -307,16 +307,16 @@ impl ConsumeCounter {
     }
 
     pub fn record_borrowed_message_receipt(&mut self, msg: &BorrowedMessage<'_>) -> bool {
-        // log every 10000 messages
-        if msg.offset() % 10000 == 0 {
-            debug!("Message received: {}", msg.offset());
-        }
         self.count += 1;
         let c = match self.target_count {
             Some(i) => i,
             None => 0,
         };
-        info!("Count {}/{}", self.count, c);
+        // log every 10000 messages
+        if msg.offset() % 10000 == 0 {
+            debug!("Message received: {}", msg.offset());
+            info!("Count {}/{}", self.count, c);
+        }
         match self.target_count {
             None => false,
             Some(limit) => self.count >= limit,
