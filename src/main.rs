@@ -40,6 +40,13 @@ lazy_static! {
         [0x0f; MAX_COMPRESSIBLE_PAYLOAD];
 }
 
+fn shuffle_brokers(brokers: String) -> String {
+    let mut split_brokers: Vec<String> = brokers.split(",").map(str::to_string).collect();
+    split_brokers.shuffle(&mut rand::thread_rng());
+    let shuffled_brokers = split_brokers.join(",");
+    return shuffled_brokers;
+}
+
 /// Stress the tcp_server_listen_backlog setting
 /// A system with a small backlog will experience errors here: a system with
 /// a larger backlog will not.
@@ -122,7 +129,7 @@ async fn produce(
 ) -> ProducerStats {
     debug!("Producer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
-    cfg.set("bootstrap.servers", &brokers);
+    cfg.set("bootstrap.servers", shuffle_brokers(brokers));
     cfg.set("message.max.bytes", "1000000000");
 
     // Stash compression mode for use in log messages
@@ -335,9 +342,10 @@ async fn consume(
 ) {
     debug!("Consumer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
+
     // basic options
     cfg.set("group.id", &group)
-        .set("bootstrap.servers", &brokers)
+        .set("bootstrap.servers", shuffle_brokers(brokers))
         .set("enable.partition.eof", "false")
         .set("socket.timeout.ms", "180000")
         .set("enable.auto.commit", "true")
