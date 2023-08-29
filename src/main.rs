@@ -127,6 +127,9 @@ async fn produce(
 
     // Stash compression mode for use in log messages
     let mut compression: Option<String> = None;
+    if my_id == 10 {
+        cfg.set("debug", "broker,msg,metadata");
+    }
 
     // custom properties
     for (k, v) in properties {
@@ -342,6 +345,10 @@ async fn consume(
         .set("socket.timeout.ms", "180000")
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "earliest");
+
+    if my_id == 10 {
+        cfg.set("debug", "broker,metadata,msg");
+    }
 
     match static_prefix {
         Some(prefix) => {
