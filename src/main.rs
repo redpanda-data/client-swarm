@@ -112,7 +112,7 @@ struct Payload {
 
 async fn produce(
     brokers: String,
-    topic: String,
+    topics: Vec<String>,
     my_id: usize,
     m: usize,
     messages_per_second: Option<NonZeroU32>,
@@ -180,8 +180,9 @@ async fn produce(
         };
 
         total_size += sz;
+        let topic = topics.choose(&mut rand::thread_rng());
         let fut = producer.send(
-            FutureRecord::to(&topic).key(&key).payload(payload_slice),
+            FutureRecord::to(&topic.unwrap()).key(&key).payload(payload_slice),
             timeout,
         );
         debug!("Producer {} waiting", my_id);
@@ -216,7 +217,7 @@ async fn produce(
 /// Stress the system for very large numbers of producers
 async fn producers(
     brokers: String,
-    topic: String,
+    topics: Vec<String>,
     m: usize,
     messages_per_second: Option<NonZeroU32>,
     n: usize,
@@ -225,6 +226,10 @@ async fn producers(
     payload: Payload,
     timeout: Duration,
 ) {
+    if topics.is_empty() {
+        error!("Empty list of topics passed to producers fn");
+        std::process::exit(-1);
+    }
     let mut tasks = vec![];
     let kv_pairs = split_properties(properties);
     let start_time = Instant::now();
@@ -246,7 +251,7 @@ async fn producers(
 
         tasks.push(tokio::spawn(produce(
             brokers.clone(),
-            topic.clone(),
+            topics.clone(),
             i,
             m,
             messages_per_second,
@@ -326,7 +331,7 @@ impl ConsumeCounter {
 
 async fn consume(
     brokers: String,
-    topic: String,
+    topics: Vec<String>,
     group: String,
     static_prefix: Option<String>,
     properties: Vec<(String, String)>,
@@ -361,9 +366,10 @@ async fn consume(
     let consumer: StreamConsumer = cfg.create().unwrap();
 
     debug!("Consumer {} fetching", my_id);
+    let topics_strs: Vec<&str> = topics.iter().map(|s: &String| s.as_str()).collect();
     consumer
-        .subscribe(&[&topic])
-        .expect("Can't subscribe to specified topic");
+        .subscribe(&topics_strs)
+        .expect("Can't subscribe to specified topic(s)");
 
     let mut stream = consumer.stream();
     loop {
@@ -386,13 +392,17 @@ async fn consume(
 /// Stress the system for very large numbers of consumers
 async fn consumers(
     brokers: String,
-    topic: String,
+    topics: Vec<String>,
     group: String,
     static_prefix: Option<String>,
     n: usize,
     messages: Option<u64>,
     properties: Vec<String>,
 ) {
+    if topics.is_empty() {
+        error!("Empty list of topics passed to consumers fn");
+        std::process::exit(-1);
+    }
     let kv_pairs = split_properties(properties);
     let mut tasks = vec![];
     info!("Spawning {} consumers", n);
@@ -402,7 +412,7 @@ async fn consumers(
     for i in 0..n {
         tasks.push(tokio::spawn(consume(
             brokers.clone(),
-            topic.clone(),
+            topics.clone(),
             group.clone(),
             static_prefix.clone(),
             kv_pairs.clone(),
@@ -435,7 +445,7 @@ enum Commands {
     /// Creates a producer swarm
     Producers {
         #[clap(short, long)]
-        topic: String,
+        topics: String,
         #[clap(short, long)]
         count: usize,
         #[clap(short, long)]
@@ -461,7 +471,7 @@ enum Commands {
     /// Creates consumer swarm
     Consumers {
         #[clap(short, long)]
-        topic: String,
+        topics: String,
         #[clap(short, long)]
         group: String,
         /// if set uses static group membership protocol
@@ -487,7 +497,7 @@ async fn main() {
             connections(brokers, *number).await;
         }
         Some(Commands::Producers {
-            topic,
+            topics,
             count,
             messages,
             messages_per_second,
@@ -512,7 +522,7 @@ async fn main() {
 
             producers(
                 brokers,
-                topic.clone(),
+                topics.split(",").map(|x| x.to_string()).collect(),
                 *messages,
                 mps_opt,
                 *count,
@@ -529,7 +539,7 @@ async fn main() {
             .await;
         }
         Some(Commands::Consumers {
-            topic,
+            topics,
             group,
             static_prefix,
             count,
@@ -538,7 +548,7 @@ async fn main() {
         }) => {
             consumers(
                 brokers,
-                topic.clone(),
+                topics.split(",").map(|x| x.to_string()).collect(),
                 group.clone(),
                 static_prefix.clone(),
                 *count,
