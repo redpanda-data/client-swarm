@@ -202,7 +202,10 @@ async fn produce(
     }
 
     let total_time = start_time.elapsed();
-    let rate = total_size as u64 / total_time.as_secs();
+    let mut rate = total_size as u64;
+    if total_time.as_secs() != 0 {
+        rate = total_size as u64 / total_time.as_secs();
+    }
 
     info!("Producer {} complete with rate {} bytes/s", my_id, rate);
 
@@ -217,6 +220,7 @@ async fn produce(
 async fn producers(
     brokers: String,
     topic: String,
+    unique_topics: bool,
     m: usize,
     messages_per_second: Option<NonZeroU32>,
     n: usize,
@@ -243,10 +247,13 @@ async fn producers(
                 cfg_pairs.push(("compression.type".to_string(), c_type.clone()));
             }
         }
-
+        let mut topic_prefix = topic.clone();
+        if unique_topics {
+            topic_prefix = format!("{}-{}", topic, i);
+        }
         tasks.push(tokio::spawn(produce(
             brokers.clone(),
-            topic.clone(),
+            topic_prefix.clone(),
             i,
             m,
             messages_per_second,
@@ -387,6 +394,7 @@ async fn consume(
 async fn consumers(
     brokers: String,
     topic: String,
+    unique_topics: bool,
     group: String,
     static_prefix: Option<String>,
     n: usize,
@@ -400,9 +408,13 @@ async fn consumers(
     let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages)));
 
     for i in 0..n {
+        let mut topic_prefix = topic.clone();
+        if unique_topics {
+            topic_prefix = format!("{}-{}", topic, i);
+        }
         tasks.push(tokio::spawn(consume(
             brokers.clone(),
-            topic.clone(),
+            topic_prefix.clone(),
             group.clone(),
             static_prefix.clone(),
             kv_pairs.clone(),
@@ -436,16 +448,18 @@ enum Commands {
     Producers {
         #[clap(short, long)]
         topic: String,
+        #[clap(short, long, action)]
+        unique_topics: bool,
         #[clap(short, long)]
         count: usize,
         #[clap(short, long)]
         messages: usize,
-        #[clap(short, long, default_value_t = 0)]
+        #[clap(short = 'r', long, default_value_t = 0)]
         messages_per_second: u32,
         // list of librdkafka producer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
-        #[clap(short, long, default_value_t = 1000)]
+        #[clap(short = 'o', long, default_value_t = 1000)]
         timeout_ms: u64,
         #[clap(long)]
         compression_type: Option<String>,
@@ -462,6 +476,8 @@ enum Commands {
     Consumers {
         #[clap(short, long)]
         topic: String,
+        #[clap(short, long, action)]
+        unique_topics: bool,
         #[clap(short, long)]
         group: String,
         /// if set uses static group membership protocol
@@ -488,6 +504,7 @@ async fn main() {
         }
         Some(Commands::Producers {
             topic,
+            unique_topics,
             count,
             messages,
             messages_per_second,
@@ -513,6 +530,7 @@ async fn main() {
             producers(
                 brokers,
                 topic.clone(),
+                unique_topics.clone(),
                 *messages,
                 mps_opt,
                 *count,
@@ -530,6 +548,7 @@ async fn main() {
         }
         Some(Commands::Consumers {
             topic,
+            unique_topics,
             group,
             static_prefix,
             count,
@@ -539,6 +558,7 @@ async fn main() {
             consumers(
                 brokers,
                 topic.clone(),
+                unique_topics.clone(),
                 group.clone(),
                 static_prefix.clone(),
                 *count,
