@@ -202,7 +202,10 @@ async fn produce(
     }
 
     let total_time = start_time.elapsed();
-    let rate = total_size as u64 / total_time.as_secs();
+    let mut rate = total_size as u64;
+    if total_time.as_secs() != 0 {
+        rate = total_size as u64 / total_time.as_secs();
+    }
 
     info!("Producer {} complete with rate {} bytes/s", my_id, rate);
 
