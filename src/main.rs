@@ -220,6 +220,7 @@ async fn produce(
 async fn producers(
     brokers: String,
     topic: String,
+    unique_topics: bool,
     m: usize,
     messages_per_second: Option<NonZeroU32>,
     n: usize,
@@ -246,10 +247,13 @@ async fn producers(
                 cfg_pairs.push(("compression.type".to_string(), c_type.clone()));
             }
         }
-
+        let mut topic_prefix = topic.clone();
+        if unique_topics {
+            topic_prefix = format!("{}-{}", topic, i);
+        }
         tasks.push(tokio::spawn(produce(
             brokers.clone(),
-            topic.clone(),
+            topic_prefix.clone(),
             i,
             m,
             messages_per_second,
@@ -390,6 +394,7 @@ async fn consume(
 async fn consumers(
     brokers: String,
     topic: String,
+    unique_topics: bool,
     group: String,
     static_prefix: Option<String>,
     n: usize,
@@ -403,9 +408,13 @@ async fn consumers(
     let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages)));
 
     for i in 0..n {
+        let mut topic_prefix = topic.clone();
+        if unique_topics {
+            topic_prefix = format!("{}-{}", topic, i);
+        }
         tasks.push(tokio::spawn(consume(
             brokers.clone(),
-            topic.clone(),
+            topic_prefix.clone(),
             group.clone(),
             static_prefix.clone(),
             kv_pairs.clone(),
@@ -439,6 +448,8 @@ enum Commands {
     Producers {
         #[clap(short, long)]
         topic: String,
+        #[clap(short, long, action)]
+        unique_topics: bool,
         #[clap(short, long)]
         count: usize,
         #[clap(short, long)]
@@ -465,6 +476,8 @@ enum Commands {
     Consumers {
         #[clap(short, long)]
         topic: String,
+        #[clap(short, long, action)]
+        unique_topics: bool,
         #[clap(short, long)]
         group: String,
         /// if set uses static group membership protocol
@@ -491,6 +504,7 @@ async fn main() {
         }
         Some(Commands::Producers {
             topic,
+            unique_topics,
             count,
             messages,
             messages_per_second,
@@ -516,6 +530,7 @@ async fn main() {
             producers(
                 brokers,
                 topic.clone(),
+                unique_topics.clone(),
                 *messages,
                 mps_opt,
                 *count,
@@ -533,6 +548,7 @@ async fn main() {
         }
         Some(Commands::Consumers {
             topic,
+            unique_topics,
             group,
             static_prefix,
             count,
@@ -542,6 +558,7 @@ async fn main() {
             consumers(
                 brokers,
                 topic.clone(),
+                unique_topics.clone(),
                 group.clone(),
                 static_prefix.clone(),
                 *count,
