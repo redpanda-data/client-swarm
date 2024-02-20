@@ -443,12 +443,12 @@ enum Commands {
         count: usize,
         #[clap(short, long)]
         messages: usize,
-        #[clap(short, long, default_value_t = 0)]
+        #[clap(short = 'r', long, default_value_t = 0)]
         messages_per_second: u32,
         // list of librdkafka producer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
-        #[clap(short, long, default_value_t = 1000)]
+        #[clap(short = 'o', long, default_value_t = 1000)]
         timeout_ms: u64,
         #[clap(long)]
         compression_type: Option<String>,
