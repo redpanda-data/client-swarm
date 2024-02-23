@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use tokio;
+use tokio::sync::mpsc;
 
 use rdkafka::config::ClientConfig;
 
 use log::*;
 
+use crate::metrics;
 use crate::utils::split_properties;
 
 struct ConsumeCounter {
@@ -57,6 +59,7 @@ async fn consume(
     properties: Vec<(String, String)>,
     my_id: usize,
     counter: Arc<Mutex<ConsumeCounter>>,
+    metrics: mpsc::Sender<metrics::ClientMessages>,
 ) {
     debug!("Consumer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
@@ -100,6 +103,13 @@ async fn consume(
             }
         };
 
+        if let Err(e) = metrics
+            .send(metrics::ClientMessages::MessageProcessed { client_id: my_id })
+            .await
+        {
+            error!("Error on consumer {}, unable to send metrics: {}", my_id, e);
+        }
+
         let mut counter_locked = counter.lock().unwrap();
         let complete = (*counter_locked).record_borrowed_message_receipt(&msg);
         if complete {
@@ -118,6 +128,7 @@ pub async fn consumers(
     n: usize,
     messages: Option<u64>,
     properties: Vec<String>,
+    metrics: metrics::MetricsContext,
 ) {
     let kv_pairs = split_properties(properties);
     let mut tasks = vec![];
@@ -138,6 +149,7 @@ pub async fn consumers(
             kv_pairs.clone(),
             i,
             counter.clone(),
+            metrics.spawn_new_sender(),
         )))
     }
 

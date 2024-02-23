@@ -14,6 +14,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 use tokio;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use log::*;
 
@@ -23,7 +25,9 @@ use crate::producers::{producers, Payload};
 
 mod connections;
 mod consumers;
+mod metrics;
 mod producers;
+mod server;
 mod utils;
 
 #[derive(Parser)]
@@ -91,11 +95,61 @@ enum Commands {
     },
 }
 
+fn start_metrics(
+    metrics_config: metrics::MetricsConfig,
+    window_config: metrics::WindowConfig,
+    srv_cfg: server::ServerConfig,
+    cancel: CancellationToken,
+) -> (metrics::MetricsContext, Vec<tokio::task::JoinHandle<()>>) {
+    let (metrics_send, metrics_recv) = mpsc::channel(64);
+    let (commands_send, commands_recv) = mpsc::channel(64);
+
+    let mut metrics = metrics::Metrics::new(
+        metrics_config,
+        window_config.clone(),
+        metrics_recv,
+        commands_recv,
+        cancel.clone(),
+    );
+
+    let metrics_service = server::MetricsService::new(commands_send);
+    let mut srv = server::Server::new(srv_cfg, metrics_service, cancel.clone());
+
+    let mut join_handles = vec![];
+
+    join_handles.push(tokio::spawn(async move {
+        metrics.run().await;
+    }));
+
+    join_handles.push(tokio::spawn(async move {
+        srv.run().await;
+    }));
+
+    let mc = metrics::MetricsContext::new(window_config, metrics_send, cancel.clone());
+
+    (mc, join_handles)
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
     let cli = Cli::parse();
     let brokers = cli.brokers;
+
+    // setup metrics
+    let token = CancellationToken::new();
+    let (mc, join_handles) = start_metrics(
+        metrics::MetricsConfig { max_samples: 100 },
+        metrics::WindowConfig {
+            window_start: tokio::time::Instant::now(),
+            window_duration: Duration::from_secs(10),
+        },
+        server::ServerConfig {
+            addr: ([127, 0, 0, 1], 3000).into(),
+        },
+        token.clone(),
+    );
+
     match &cli.command {
         Some(Commands::Connections { number }) => {
             connections(brokers, *number).await;
@@ -141,6 +195,7 @@ async fn main() {
                     max_size: *max_record_size,
                 },
                 Duration::from_millis(*timeout_ms),
+                mc,
             )
             .await;
         }
@@ -162,6 +217,7 @@ async fn main() {
                 *count,
                 *messages,
                 properties.clone(),
+                mc,
             )
             .await;
         }
@@ -169,4 +225,9 @@ async fn main() {
             unimplemented!();
         }
     };
+
+    token.cancel();
+    for h in join_handles {
+        h.await.unwrap();
+    }
 }

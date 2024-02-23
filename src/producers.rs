@@ -1,4 +1,4 @@
-// Copyright 2022 Redpanda Data, Inc.
+// Copyright 2024 Redpanda Data, Inc.
 //
 // Use of this software is governed by the Business Source License
 // included in the file BSL.md
@@ -15,13 +15,16 @@ use std::time::{Duration, Instant};
 use governor::{Quota, RateLimiter};
 
 use rand::RngCore;
+
 use tokio;
+use tokio::sync::mpsc;
 
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use log::*;
 
+use crate::metrics::{ClientMessages, MetricsContext};
 use crate::utils::split_properties;
 
 const MAX_COMPRESSIBLE_PAYLOAD: usize = 128 * 1024 * 1024;
@@ -54,6 +57,7 @@ async fn produce(
     properties: Vec<(String, String)>,
     payload: Payload,
     timeout: Duration,
+    metrics: mpsc::Sender<ClientMessages>,
 ) -> ProducerStats {
     debug!("Producer {} constructing", my_id);
     let mut cfg: ClientConfig = ClientConfig::new();
@@ -132,7 +136,14 @@ async fn produce(
                 );
                 errors += 1;
             }
-            Ok(_) => {}
+            Ok(_) => {
+                if let Err(e) = metrics
+                    .send(ClientMessages::MessageProcessed { client_id: my_id })
+                    .await
+                {
+                    error!("Error on producer {}, unable to send metrics: {}", my_id, e);
+                }
+            }
         }
     }
 
@@ -163,6 +174,7 @@ pub async fn producers(
     compression_type: Option<String>,
     payload: Payload,
     timeout: Duration,
+    metrics: MetricsContext,
 ) {
     let mut tasks = vec![];
     let kv_pairs = split_properties(properties);
@@ -195,6 +207,7 @@ pub async fn producers(
             cfg_pairs,
             payload.clone(),
             timeout,
+            metrics.spawn_new_sender(),
         )))
     }
 
