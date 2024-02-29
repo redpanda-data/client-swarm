@@ -37,6 +37,10 @@ struct Cli {
     command: Option<Commands>,
     #[clap(short, long)]
     brokers: String,
+    #[clap(short = 'a', long, default_value = "127.0.0.1")]
+    metrics_address: String,
+    #[clap(short = 'p', long, default_value_t = 8080)]
+    metrics_port: u16,
 }
 
 #[derive(Subcommand)]
@@ -135,6 +139,7 @@ async fn main() {
     env_logger::init();
     let cli = Cli::parse();
     let brokers = cli.brokers;
+    let addr = cli.metrics_address.parse::<std::net::Ipv4Addr>().unwrap();
 
     // setup metrics
     let token = CancellationToken::new();
@@ -145,7 +150,7 @@ async fn main() {
             window_duration: Duration::from_secs(10),
         },
         server::ServerConfig {
-            addr: ([127, 0, 0, 1], 3000).into(),
+            addr: (addr, cli.metrics_port).into(),
         },
         token.clone(),
     );
