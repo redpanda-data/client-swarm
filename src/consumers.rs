@@ -138,8 +138,10 @@ pub async fn consumers(
 
     for i in 0..n {
         let mut topic_prefix = topic.clone();
+        let mut group = group.clone();
         if unique_topics {
             topic_prefix = format!("{}-{}", topic, i);
+            group = format!("{}-{}", group, i);
         }
         tasks.push(tokio::spawn(consume(
             brokers.clone(),
