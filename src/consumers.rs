@@ -33,6 +33,14 @@ impl ConsumeCounter {
         }
     }
 
+    pub fn is_completed(&mut self) -> bool {
+        if let Some(target_count) = self.target_count {
+            self.count >= target_count
+        } else {
+            false
+        }
+    }
+
     pub fn record_borrowed_message_receipt(&mut self, msg: &BorrowedMessage<'_>) -> bool {
         self.count += 1;
         let c = match self.target_count {
