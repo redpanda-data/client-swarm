@@ -39,8 +39,12 @@ impl ConsumeCounter {
             Some(i) => i,
             None => 0,
         };
+        let done = match self.target_count {
+            None => false,
+            Some(limit) => self.count >= limit,
+        };
         // log every 10000 messages
-        if msg.offset() % 10000 == 0 {
+        if self.count % 10000 == 0 || done {
             debug!("Message received: {}", msg.offset());
             info!("Count {}/{}", self.count, c);
         }
