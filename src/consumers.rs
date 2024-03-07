@@ -205,18 +205,24 @@ pub async fn consumers(
     let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages, cancel.clone())));
 
     for i in 0..n {
-        let mut topic_prefix = topic.clone();
-        let mut group = group.clone();
-        if unique_topics {
-            topic_prefix = format!("{}-{}", topic, i);
-        }
-        if unique_groups {
-            group = format!("{}-{}-{}", group, topic, i);
-        }
+        let topic_prefix = {
+            if unique_topics {
+                format!("{}-{}", topic, i)
+            } else {
+                topic.clone()
+            }
+        };
+        let group = {
+            if unique_groups {
+                format!("{}-{}-{}", group, topic, i)
+            } else {
+                group.clone()
+            }
+        };
         tasks.push(tokio::spawn(retrying_consume(
             brokers.clone(),
-            topic_prefix.clone(),
-            group.clone(),
+            topic_prefix,
+            group,
             static_prefix.clone(),
             kv_pairs.clone(),
             i,
