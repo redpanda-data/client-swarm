@@ -5,6 +5,8 @@
 
 set -e
 
+echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse
+echo 15000 64000 > /proc/sys/net/ipv4/ip_local_port_range
 echo 1000000 > /proc/sys/vm/max_map_count
 ulimit -n 1000000
 ulimit -s 200000
