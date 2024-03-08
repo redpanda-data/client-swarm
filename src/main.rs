@@ -84,6 +84,9 @@ enum Commands {
         topic: String,
         #[clap(short, long, action)]
         unique_topics: bool,
+        // creates a unique consumer group per consumer
+        #[clap(short, long, action)]
+        unique_groups: bool,
         #[clap(short, long)]
         group: String,
         /// if set uses static group membership protocol
@@ -207,6 +210,7 @@ async fn main() {
         Some(Commands::Consumers {
             topic,
             unique_topics,
+            unique_groups,
             group,
             static_prefix,
             count,
@@ -217,6 +221,7 @@ async fn main() {
                 brokers,
                 topic.clone(),
                 unique_topics.clone(),
+                unique_groups.clone(),
                 group.clone(),
                 static_prefix.clone(),
                 *count,

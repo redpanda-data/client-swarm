@@ -5,6 +5,7 @@ use rdkafka::message::BorrowedMessage;
 use rdkafka::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use tokio;
 use tokio::sync::mpsc;
@@ -19,6 +20,7 @@ use crate::utils::split_properties;
 struct ConsumeCounter {
     count: u64,
     target_count: Option<u64>,
+    cancel: CancellationToken,
 }
 
 /**
@@ -26,10 +28,19 @@ struct ConsumeCounter {
  * against an exit condition.
  */
 impl ConsumeCounter {
-    pub fn new(target_count: Option<u64>) -> ConsumeCounter {
+    pub fn new(target_count: Option<u64>, cancel: CancellationToken) -> ConsumeCounter {
         ConsumeCounter {
             count: 0,
             target_count,
+            cancel,
+        }
+    }
+
+    pub fn is_completed(&mut self) -> bool {
+        if let Some(target_count) = self.target_count {
+            self.count >= target_count
+        } else {
+            false
         }
     }
 
@@ -39,15 +50,65 @@ impl ConsumeCounter {
             Some(i) => i,
             None => 0,
         };
+        let done = match self.target_count {
+            None => false,
+            Some(limit) => self.count >= limit,
+        };
         // log every 10000 messages
-        if msg.offset() % 10000 == 0 {
+        if self.count % 10000 == 0 || done {
             debug!("Message received: {}", msg.offset());
             info!("Count {}/{}", self.count, c);
         }
-        match self.target_count {
-            None => false,
-            Some(limit) => self.count >= limit,
+
+        if done {
+            self.cancel.cancel();
+            info!("Count {}/{}", self.count, c);
+            info!("Cancelling consumers");
+            true
+        } else {
+            false
         }
+    }
+}
+
+async fn retrying_consume(
+    brokers: String,
+    topic: String,
+    group: String,
+    static_prefix: Option<String>,
+    properties: Vec<(String, String)>,
+    my_id: usize,
+    counter: Arc<Mutex<ConsumeCounter>>,
+    metrics: mpsc::Sender<metrics::ClientMessages>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let c = consume(
+            brokers.clone(),
+            topic.clone(),
+            group.clone(),
+            static_prefix.clone(),
+            properties.clone(),
+            my_id,
+            counter.clone(),
+            metrics.clone(),
+        );
+
+        tokio::select! {
+            _ = c => {},
+            _ = cancel.cancelled() => { return },
+        }
+
+        let complete = {
+            let mut counter_locked = counter.lock().unwrap();
+            (*counter_locked).is_completed()
+        };
+
+        if complete {
+            break;
+        }
+
+        error!("consumer failed; retrying {}", my_id);
     }
 }
 
@@ -96,6 +157,11 @@ async fn consume(
     let mut stream = consumer.stream();
     loop {
         let item = stream.try_next().await;
+
+        if let Err(_) = item {
+            return;
+        }
+
         let msg = match item.expect("Error reading from stream") {
             Some(msg) => msg,
             None => {
@@ -123,6 +189,7 @@ pub async fn consumers(
     brokers: String,
     topic: String,
     unique_topics: bool,
+    unique_groups: bool,
     group: String,
     static_prefix: Option<String>,
     n: usize,
@@ -134,22 +201,34 @@ pub async fn consumers(
     let mut tasks = vec![];
     info!("Spawning {} consumers", n);
 
-    let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages)));
+    let cancel = CancellationToken::new();
+    let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages, cancel.clone())));
 
     for i in 0..n {
-        let mut topic_prefix = topic.clone();
-        if unique_topics {
-            topic_prefix = format!("{}-{}", topic, i);
-        }
-        tasks.push(tokio::spawn(consume(
+        let topic_prefix = {
+            if unique_topics {
+                format!("{}-{}", topic, i)
+            } else {
+                topic.clone()
+            }
+        };
+        let group = {
+            if unique_groups {
+                format!("{}-{}-{}", group, topic, i)
+            } else {
+                group.clone()
+            }
+        };
+        tasks.push(tokio::spawn(retrying_consume(
             brokers.clone(),
-            topic_prefix.clone(),
-            group.clone(),
+            topic_prefix,
+            group,
             static_prefix.clone(),
             kv_pairs.clone(),
             i,
             counter.clone(),
             metrics.spawn_new_sender(),
+            cancel.clone(),
         )))
     }
 
