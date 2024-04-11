@@ -5,6 +5,7 @@ use rdkafka::message::BorrowedMessage;
 use rdkafka::Message;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use tokio;
@@ -196,6 +197,7 @@ pub async fn consumers(
     messages: Option<u64>,
     properties: Vec<String>,
     metrics: metrics::MetricsContext,
+    client_spawn_wait: Duration,
 ) {
     let kv_pairs = split_properties(properties);
     let mut tasks = vec![];
@@ -229,7 +231,9 @@ pub async fn consumers(
             counter.clone(),
             metrics.spawn_new_sender(),
             cancel.clone(),
-        )))
+        )));
+
+        tokio::time::sleep(client_spawn_wait).await;
     }
 
     for t in tasks {

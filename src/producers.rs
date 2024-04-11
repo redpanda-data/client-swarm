@@ -175,6 +175,7 @@ pub async fn producers(
     payload: Payload,
     timeout: Duration,
     metrics: MetricsContext,
+    client_spawn_wait: Duration,
 ) {
     let mut tasks = vec![];
     let kv_pairs = split_properties(properties);
@@ -208,7 +209,9 @@ pub async fn producers(
             payload.clone(),
             timeout,
             metrics.spawn_new_sender(),
-        )))
+        )));
+
+        tokio::time::sleep(client_spawn_wait).await;
     }
 
     let mut results = vec![];
