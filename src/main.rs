@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
+use rdkafka::client;
 use tokio;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -77,6 +78,8 @@ enum Commands {
         compressible_payload: bool,
         #[clap(long, default_value_t = 1000)]
         keys: u64,
+        #[clap(long, default_value_t = 33)]
+        client_spawn_wait_ms: u64,
     },
     /// Creates consumer swarm
     Consumers {
@@ -99,6 +102,8 @@ enum Commands {
         properties: Vec<String>,
         #[clap(short, long)]
         messages: Option<u64>,
+        #[clap(long, default_value_t = 33)]
+        client_spawn_wait_ms: u64,
     },
 }
 
@@ -175,6 +180,7 @@ async fn main() {
             max_record_size,
             keys,
             timeout_ms,
+            client_spawn_wait_ms,
         }) => {
             let min_size = min_record_size.unwrap_or(*max_record_size);
             if let Some(min) = min_record_size {
@@ -204,6 +210,7 @@ async fn main() {
                 },
                 Duration::from_millis(*timeout_ms),
                 mc,
+                Duration::from_millis(*client_spawn_wait_ms)
             )
             .await;
         }
@@ -216,6 +223,7 @@ async fn main() {
             count,
             properties,
             messages,
+            client_spawn_wait_ms,
         }) => {
             consumers(
                 brokers,
@@ -228,6 +236,7 @@ async fn main() {
                 *messages,
                 properties.clone(),
                 mc,
+                Duration::from_millis(*client_spawn_wait_ms),
             )
             .await;
         }
