@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
-use rdkafka::client;
 use tokio;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -210,7 +209,7 @@ async fn main() {
                 },
                 Duration::from_millis(*timeout_ms),
                 mc,
-                Duration::from_millis(*client_spawn_wait_ms)
+                Duration::from_millis(*client_spawn_wait_ms),
             )
             .await;
         }
