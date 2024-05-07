@@ -8,6 +8,7 @@
 // by the Apache License, Version 2.0
 use histogram::Histogram;
 
+use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio_util::sync::CancellationToken;
@@ -21,15 +22,19 @@ use log::*;
 #[derive(Clone, Debug)]
 pub enum AggregatedMetricsMessages {
     AggWindow {
-        messages_in_window: u64,
+        window_counts: MessageCounts,
         window_epoch: u32,
     },
+    ClientStart,
+    ClientStop,
 }
 
 #[derive(Clone, Debug)]
 pub enum ClientMessages {
-    MessageProcessed { client_id: usize },
-    ClientFailed { client_id: usize },
+    MessageSuccess { client_id: usize },
+    MessageFailure { client_id: usize },
+    ClientStart { client_id: usize },
+    ClientStop { client_id: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -38,12 +43,28 @@ pub struct WindowConfig {
     pub window_duration: Duration,
 }
 
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct MessageCounts {
+    success_count: u64,
+    error_count: u64,
+}
+
+impl MessageCounts {
+    pub fn new() -> MessageCounts {
+        MessageCounts {
+            success_count: 0,
+            error_count: 0,
+        }
+    }
+}
+
 pub struct MetricsAggregator {
     recv: mpsc::Receiver<ClientMessages>,
     send: mpsc::Sender<AggregatedMetricsMessages>,
     window_interval: time::Interval,
-    messages_in_window: u64,
+    window_counts: MessageCounts,
     current_window_epoch: u32,
+    // true iff we have sent the ClientStart message for this client
     cancel: CancellationToken,
 }
 
@@ -69,7 +90,7 @@ impl MetricsAggregator {
                 window_config.window_start,
                 window_config.window_duration,
             ),
-            messages_in_window: 0,
+            window_counts: MessageCounts::new(),
             current_window_epoch: 0,
             cancel,
         }
@@ -77,33 +98,44 @@ impl MetricsAggregator {
 
     fn recv_msg(&mut self, msg: ClientMessages) {
         match msg {
-            ClientMessages::MessageProcessed { client_id: _ } => {
-                self.messages_in_window += 1;
+            ClientMessages::MessageSuccess { client_id: _ } => {
+                self.window_counts.success_count += 1;
             }
-            ClientMessages::ClientFailed { client_id: _ } => {}
+            ClientMessages::MessageFailure { client_id: _ } => {
+                self.window_counts.error_count += 1;
+            }
+            ClientMessages::ClientStart { client_id: _ } => {
+                self.send_metrics_message(AggregatedMetricsMessages::ClientStart)
+            }
+            ClientMessages::ClientStop { client_id: _ } => {
+                self.send_metrics_message(AggregatedMetricsMessages::ClientStop)
+            }
         }
     }
 
-    fn tick(&mut self) {
-        let messages_in_window = self.messages_in_window;
-        let window_epoch = self.current_window_epoch;
-
-        self.messages_in_window = 0;
-        self.current_window_epoch += 1;
-
+    // Send a message onwards to the associated Metrics
+    // instance.
+    fn send_metrics_message(&self, message: AggregatedMetricsMessages) {
         let agg_sender = self.send.clone();
-
         tokio::spawn(async move {
-            let res = agg_sender
-                .send(AggregatedMetricsMessages::AggWindow {
-                    messages_in_window,
-                    window_epoch,
-                })
-                .await;
+            let res = agg_sender.send(message).await;
 
             if let Err(msg) = res {
-                warn!("failed to send aggregated metrics: {}", msg);
+                warn!("failed to send metrics message ({}): {}", msg, msg);
             }
+        });
+    }
+
+    fn tick(&mut self) {
+        let window_counts = self.window_counts;
+        let window_epoch = self.current_window_epoch;
+
+        self.window_counts = MessageCounts::new();
+        self.current_window_epoch += 1;
+
+        self.send_metrics_message(AggregatedMetricsMessages::AggWindow {
+            window_counts,
+            window_epoch,
         });
     }
 
@@ -120,7 +152,15 @@ impl MetricsAggregator {
 }
 
 struct AggregatedSample {
-    hist: Histogram,
+    // the histogram of message rates (msg/s) over all clients
+    msg_rate: Histogram,
+    // the number of clients that have reported (so far) into
+    // this sample
+    report_count: i32,
+    // the total number of successful messages this interval (summed over clients)
+    total_success: u64,
+    // the total number of errored messages this interval (summed over clients)
+    total_error: u64,
     window_epoch: u32,
 }
 
@@ -129,7 +169,10 @@ pub struct MetricsConfig {
 }
 
 pub struct LastMetricsResult {
-    pub hist: Histogram,
+    pub msg_rate: Histogram,
+    pub total_counts: MessageCounts,
+    pub clients_started: i64,
+    pub clients_stopped: i64,
 }
 
 pub enum MetricsCommands {
@@ -143,6 +186,13 @@ pub struct Metrics {
     metrics_recv: mpsc::Receiver<AggregatedMetricsMessages>,
     commands_recv: mpsc::Receiver<MetricsCommands>,
     samples: AllocRingBuffer<AggregatedSample>,
+    total_counts: MessageCounts,
+    // The number of clients that have ever been started (includes ones that have
+    // subsequently stopped). To get the number of _currently_ active clients,
+    // subtract stopped from started.
+    clients_started: i64,
+    // The number of clients that have been stopped.
+    clients_stopped: i64,
     window_config: WindowConfig,
     cancel: CancellationToken,
 }
@@ -159,6 +209,9 @@ impl Metrics {
             metrics_recv,
             commands_recv,
             samples: AllocRingBuffer::new(metrics_config.max_samples),
+            total_counts: MessageCounts::new(),
+            clients_started: 0,
+            clients_stopped: 0,
             window_config,
             cancel,
         }
@@ -178,10 +231,11 @@ impl Metrics {
         self.window_config.window_start + (self.window_config.window_duration * window_epoch)
     }
 
-    fn add_missing_windows(&mut self, window_epoch: u32) {
+    // returns true if at least one new epoch was added
+    fn add_missing_windows(&mut self, window_epoch: u32) -> bool {
         // Check if the window has already been added.
         if !self.samples.is_empty() && self.samples.back().unwrap().window_epoch >= window_epoch {
-            return;
+            return false;
         }
 
         let start_epoch = self.samples.back().map(|w| w.window_epoch + 1).unwrap_or(0);
@@ -189,27 +243,51 @@ impl Metrics {
 
         for wi in start_epoch..end_epoch {
             self.samples.push(AggregatedSample {
-                hist: Histogram::new(7, 64).unwrap(),
+                msg_rate: Histogram::new(7, 64).unwrap(),
+                report_count: 0,
+                total_success: 0,
+                total_error: 0,
                 window_epoch: wi,
             });
         }
+        start_epoch < end_epoch
     }
 
     fn recv_metrics(&mut self, metrics: AggregatedMetricsMessages) {
         match metrics {
             AggregatedMetricsMessages::AggWindow {
-                messages_in_window,
+                window_counts,
                 window_epoch,
             } => {
-                self.add_missing_windows(window_epoch);
+                let added_epoch = self.add_missing_windows(window_epoch);
+
+                self.total_counts.success_count += window_counts.success_count;
+                self.total_counts.error_count += window_counts.error_count;
+
+                // we use the addition of a new epoch as a convenient "clock" to emit periodic log
+                // messages about the overall progress
+                if added_epoch {
+                    info!(
+                        "Running totals: success={}, errors={}, clients={}/{} (active/total)",
+                        self.total_counts.success_count,
+                        self.total_counts.error_count,
+                        self.clients_started - self.clients_stopped,
+                        self.clients_started,
+                    );
+                }
+
                 // Used to convert messages in window to messages/sec
                 let normalization_c = self.window_config.window_duration.as_secs();
 
                 if let Some(i) = self.get_epoch_index(window_epoch) {
-                    self.samples[i]
-                        .hist
-                        .increment(messages_in_window / normalization_c)
+                    let sample = &mut self.samples[i];
+                    sample.report_count += 1;
+                    sample
+                        .msg_rate
+                        .increment(window_counts.success_count / normalization_c)
                         .expect("shouldn't fail");
+                    sample.total_success += window_counts.success_count;
+                    sample.total_error += window_counts.error_count;
                 } else {
                     warn!(
                         "Received samples for a window epoch that has been dropped: {}",
@@ -217,6 +295,8 @@ impl Metrics {
                     );
                 }
             }
+            AggregatedMetricsMessages::ClientStart => self.clients_started += 1,
+            AggregatedMetricsMessages::ClientStop => self.clients_stopped += 1,
         }
     }
 
@@ -237,11 +317,16 @@ impl Metrics {
             };
 
             if add {
-                hist = hist.checked_add(&sample.hist).unwrap();
+                hist = hist.checked_add(&sample.msg_rate).unwrap();
             }
         }
 
-        LastMetricsResult { hist }
+        LastMetricsResult {
+            msg_rate: hist,
+            total_counts: self.total_counts,
+            clients_started: self.clients_started,
+            clients_stopped: self.clients_stopped,
+        }
     }
 
     fn recv_command(&mut self, command: MetricsCommands) {

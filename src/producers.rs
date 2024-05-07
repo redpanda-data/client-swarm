@@ -9,9 +9,9 @@
 
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use tokio::task::JoinSet;
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
+use tokio::task::JoinSet;
 
 use governor::{Quota, RateLimiter};
 
@@ -98,6 +98,17 @@ async fn produce(
         None
     };
 
+    let send_metric = |msg| async {
+        if let Err(e) = metrics.send(msg).await {
+            error!(
+                "Error on producer {}, unable to send metrics message: {}",
+                my_id, e
+            );
+        }
+    };
+
+    let mut start_sent = false;
+
     for i in 0..m {
         if let Some(rl) = &mut rate_limit {
             rl.until_ready().await;
@@ -126,7 +137,7 @@ async fn produce(
             timeout,
         );
         debug!("Producer {} waiting", my_id);
-        match fut.await {
+        let succeeded = match fut.await {
             Err((e, _msg)) => {
                 let compression: &str = compression
                     .as_ref()
@@ -137,16 +148,20 @@ async fn produce(
                     my_id, i, m, sz, compression, payload.compressible, e
                 );
                 errors += 1;
+                false
             }
-            Ok(_) => {
-                if let Err(e) = metrics
-                    .send(ClientMessages::MessageProcessed { client_id: my_id })
-                    .await
-                {
-                    error!("Error on producer {}, unable to send metrics: {}", my_id, e);
-                }
+            Ok(_) => true,
+        };
+
+        if succeeded {
+            if !start_sent {
+                start_sent = true;
+                send_metric(ClientMessages::ClientStart { client_id: my_id }).await;
             }
-        }
+            send_metric(ClientMessages::MessageSuccess { client_id: my_id }).await;
+        } else {
+            send_metric(ClientMessages::MessageFailure { client_id: my_id }).await;
+        };
     }
 
     let total_time = start_time.elapsed();
@@ -156,6 +171,13 @@ async fn produce(
     }
 
     info!("Producer {} complete with rate {} bytes/s", my_id, rate);
+
+    if start_sent {
+        // only send "stop" if we sent "start", for producers that don't even
+        // live a single tick() we won't have sent the start, this avoid an
+        // imbalanced start/stop count
+        send_metric(ClientMessages::ClientStop { client_id: my_id }).await;
+    }
 
     ProducerStats {
         id: my_id,
