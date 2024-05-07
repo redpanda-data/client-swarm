@@ -9,6 +9,7 @@
 
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
+use tokio::task::JoinSet;
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,7 @@ lazy_static! {
 }
 
 pub struct ProducerStats {
+    id: usize,
     rate: u64,
     total_size: usize,
     errors: u32,
@@ -156,6 +158,7 @@ async fn produce(
     info!("Producer {} complete with rate {} bytes/s", my_id, rate);
 
     ProducerStats {
+        id: my_id,
         rate,
         total_size,
         errors,
@@ -177,7 +180,7 @@ pub async fn producers(
     metrics: MetricsContext,
     client_spawn_wait: Duration,
 ) {
-    let mut tasks = vec![];
+    let mut tasks = JoinSet::<ProducerStats>::new();
     let kv_pairs = split_properties(properties);
     let start_time = Instant::now();
     info!("Spawning {}", n);
@@ -199,7 +202,7 @@ pub async fn producers(
         if unique_topics {
             topic_prefix = format!("{}-{}", topic, i);
         }
-        tasks.push(tokio::spawn(produce(
+        tasks.spawn(produce(
             brokers.clone(),
             topic_prefix.clone(),
             i,
@@ -209,19 +212,23 @@ pub async fn producers(
             payload.clone(),
             timeout,
             metrics.spawn_new_sender(),
-        )));
+        ));
 
         tokio::time::sleep(client_spawn_wait).await;
     }
 
     let mut results = vec![];
     let mut total_size: usize = 0;
-    for (i, t) in tasks.into_iter().enumerate() {
-        info!("Joining producer {}...", i);
-        let produce_stats = t.await.unwrap();
+
+    let mut remaining = n;
+    while let Some(t) = tasks.join_next().await {
+        remaining -= 1;
+        let produce_stats = t.unwrap();
+        let id = produce_stats.id;
+        info!("Joined producer ID {}, {}/{} remaining.", id, remaining, n);
         results.push(produce_stats.rate);
         if produce_stats.errors > 0 {
-            warn!("Producer {}  had {} errors", i, produce_stats.errors);
+            warn!("Producer {} had {} errors", id, produce_stats.errors);
         }
         total_size += produce_stats.total_size;
     }
