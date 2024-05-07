@@ -24,9 +24,9 @@ use std::net::SocketAddr;
 
 use tokio::sync::{mpsc, oneshot};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-use crate::metrics;
+use crate::metrics::{self, MessageCounts};
 
 use log::*;
 
@@ -36,11 +36,14 @@ fn parse_query(q: &str) -> HashMap<String, String> {
         .collect::<HashMap<String, String>>()
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct SummaryStats {
     min: u64,
     max: u64,
     median: u64,
+    counts_from_start: MessageCounts,
+    clients_started: i64,
+    clients_stopped: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -73,9 +76,12 @@ impl MetricsService {
 
         match rx.await {
             Ok(resp) => Some(SummaryStats {
-                min: resp.hist.percentile(0.0).unwrap().end(),
-                max: resp.hist.percentile(100.0).unwrap().end(),
-                median: resp.hist.percentile(50.0).unwrap().start(),
+                min: resp.msg_rate.percentile(0.0).unwrap().end(),
+                max: resp.msg_rate.percentile(100.0).unwrap().end(),
+                median: resp.msg_rate.percentile(50.0).unwrap().start(),
+                counts_from_start: resp.total_counts,
+                clients_started: resp.clients_started,
+                clients_stopped: resp.clients_stopped,
             }),
             Err(e) => {
                 error!("Couldn't get summary stats: {}", e);

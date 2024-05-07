@@ -171,7 +171,7 @@ async fn consume(
         };
 
         if let Err(e) = metrics
-            .send(metrics::ClientMessages::MessageProcessed { client_id: my_id })
+            .send(metrics::ClientMessages::MessageSuccess { client_id: my_id })
             .await
         {
             error!("Error on consumer {}, unable to send metrics: {}", my_id, e);
