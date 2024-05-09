@@ -30,8 +30,12 @@ mod producers;
 mod server;
 mod utils;
 
+use shadow_rs::shadow;
+
+shadow!(build);
+
 #[derive(Parser)]
-#[clap(author, version, about, long_about = None)]
+#[clap(author, version, about, long_about = None, long_version = build::CLAP_LONG_VERSION)]
 struct Cli {
     #[clap(subcommand)]
     command: Option<Commands>,
