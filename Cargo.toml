@@ -2,6 +2,7 @@
 name = "client-swarm"
 version = "1.0.0"
 edition = "2018"
+build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -10,7 +11,7 @@ tokio = { version = "1.18.5", features = ["full"] }
 rdkafka = { version = "0.36.2", features = ["cmake-build", "zstd-pkg-config", "ssl", "sasl"]}
 async-std = { version = "1.9.0", features = ["attributes"] }
 futures = { version = "0.3", default-features = false }
-clap = { version = "3.1.18", features = ["derive"] }
+clap = { version = "=4.3.24", features = ["derive"] }
 log = "0.4.14"
 env_logger = "0.9.0"
 rand = "0.8.4"
@@ -26,3 +27,7 @@ hyper-util = { version = "0.1.3", features = ["tokio"] }
 form_urlencoded = "1.2.1"
 bytes = "1.5.0"
 http-body-util = "0.1.0"
+shadow-rs = "0.27.1"
+
+[build-dependencies]
+shadow-rs = "0.27.1"
