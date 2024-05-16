@@ -26,7 +26,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use serde::Serialize;
 
-use crate::metrics::{self, MessageCounts};
+use crate::metrics::{self, LastMetricsResult, MessageCounts};
 
 use log::*;
 
@@ -38,9 +38,9 @@ fn parse_query(q: &str) -> HashMap<String, String> {
 
 #[derive(Serialize)]
 pub struct SummaryStats {
-    min: u64,
-    max: u64,
-    median: u64,
+    min: f64,
+    max: f64,
+    median: f64,
     counts_from_start: MessageCounts,
     clients_started: i64,
     clients_stopped: i64,
@@ -74,11 +74,19 @@ impl MetricsService {
             return None;
         }
 
+        fn pct(resp: &LastMetricsResult, p: f64) -> f64 {
+            // get the pth percentile and convert from msg/Msec to msg/sec
+            let b = resp.msg_rate.percentile(p).unwrap().start() as f64 / 1000000.;
+            let e = resp.msg_rate.percentile(p).unwrap().end() as f64 / 1000000.;
+            // return the bucket midpoint
+            b + (e - b) / 2.
+        }
+
         match rx.await {
             Ok(resp) => Some(SummaryStats {
-                min: resp.msg_rate.percentile(0.0).unwrap().end(),
-                max: resp.msg_rate.percentile(100.0).unwrap().end(),
-                median: resp.msg_rate.percentile(50.0).unwrap().start(),
+                min: pct(&resp, f64::MIN_POSITIVE), // use 'eps' since 0.0 just returns the first bucket with lower bound 0
+                max: pct(&resp, 100.),
+                median: pct(&resp, 50.),
                 counts_from_start: resp.total_counts,
                 clients_started: resp.clients_started,
                 clients_stopped: resp.clients_stopped,
