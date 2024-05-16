@@ -152,7 +152,8 @@ impl MetricsAggregator {
 }
 
 struct AggregatedSample {
-    // the histogram of message rates (msg/s) over all clients
+    // The histogram of message rates (msg/million-seconds) over all clients.
+    // The weird units are to accommodate the integer nature of histograms.
     msg_rate: Histogram,
     // the number of clients that have reported (so far) into
     // this sample
@@ -276,15 +277,18 @@ impl Metrics {
                     );
                 }
 
-                // Used to convert messages in window to messages/sec
-                let normalization_c = self.window_config.window_duration.as_secs();
+                // Used to convert messages in window to messages/Msec (million seconds)
+                let normalization_c =
+                    self.window_config.window_duration.as_secs() as f64 / 1000000.;
 
                 if let Some(i) = self.get_epoch_index(window_epoch) {
                     let sample = &mut self.samples[i];
                     sample.report_count += 1;
                     sample
                         .msg_rate
-                        .increment(window_counts.success_count / normalization_c)
+                        .increment(
+                            (window_counts.success_count as f64 / normalization_c).round() as u64,
+                        )
                         .expect("shouldn't fail");
                     sample.total_success += window_counts.success_count;
                     sample.total_error += window_counts.error_count;
