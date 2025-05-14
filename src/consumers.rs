@@ -124,6 +124,16 @@ async fn consume(
     metrics: mpsc::Sender<metrics::ClientMessages>,
 ) {
     debug!("Consumer {} constructing", my_id);
+
+    let send_metric = |msg| async {
+        if let Err(e) = metrics.send(msg).await {
+            error!(
+                "Error on consumer {}, unable to send metrics message: {}",
+                my_id, e
+            );
+        }
+    };
+
     let mut cfg: ClientConfig = ClientConfig::new();
     // basic options
     cfg.set("group.id", &group)
@@ -155,6 +165,8 @@ async fn consume(
         .subscribe(&[&topic])
         .expect("Can't subscribe to specified topic");
 
+    send_metric(metrics::ClientMessages::ClientStart { client_id: my_id }).await;
+
     let mut stream = consumer.stream();
     loop {
         let item = stream.try_next().await;
@@ -170,12 +182,7 @@ async fn consume(
             }
         };
 
-        if let Err(e) = metrics
-            .send(metrics::ClientMessages::MessageSuccess { client_id: my_id })
-            .await
-        {
-            error!("Error on consumer {}, unable to send metrics: {}", my_id, e);
-        }
+        send_metric(metrics::ClientMessages::MessageSuccess { client_id: my_id }).await;
 
         let mut counter_locked = counter.lock().unwrap();
         let complete = (*counter_locked).record_borrowed_message_receipt(&msg);
@@ -183,6 +190,8 @@ async fn consume(
             break;
         }
     }
+
+    send_metric(metrics::ClientMessages::ClientStop { client_id: my_id }).await;
 }
 
 /// Stress the system for very large numbers of consumers
