@@ -9,7 +9,6 @@
 
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 
@@ -55,7 +54,7 @@ async fn produce(
     topic: String,
     my_id: usize,
     m: usize,
-    messages_per_second: Option<NonZeroU32>,
+    message_period: Option<Duration>,
     properties: Vec<(String, String)>,
     payload: Payload,
     timeout: Duration,
@@ -90,12 +89,12 @@ async fn produce(
     let mut total_size: usize = 0;
     let mut errors: u32 = 0;
 
-    let mut rate_limit = if messages_per_second.is_some() {
-        Option::Some(RateLimiter::direct(Quota::per_second(
-            messages_per_second.unwrap(),
-        )))
-    } else {
-        None
+    let mut rate_limit = {
+        if let Some(mp) = message_period {
+            Some(RateLimiter::direct(Quota::with_period(mp).unwrap()))
+        } else {
+            None
+        }
     };
 
     let send_metric = |msg| async {
@@ -193,7 +192,7 @@ pub async fn producers(
     topic: String,
     unique_topics: bool,
     m: usize,
-    messages_per_second: Option<NonZeroU32>,
+    message_period: Option<Duration>,
     n: usize,
     properties: Vec<String>,
     compression_type: Option<String>,
@@ -229,7 +228,7 @@ pub async fn producers(
             topic_prefix.clone(),
             i,
             m,
-            messages_per_second,
+            message_period,
             cfg_pairs,
             payload.clone(),
             timeout,
