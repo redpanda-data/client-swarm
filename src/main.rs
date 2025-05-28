@@ -83,6 +83,8 @@ enum Commands {
         keys: u64,
         #[clap(long, default_value_t = 33)]
         client_spawn_wait_ms: u64,
+        #[clap(long)]
+        message_period: Option<humantime::Duration>,
     },
     /// Creates consumer swarm
     Consumers {
@@ -184,6 +186,7 @@ async fn main() {
             keys,
             timeout_ms,
             client_spawn_wait_ms,
+            message_period,
         }) => {
             let min_size = min_record_size.unwrap_or(*max_record_size);
             if let Some(min) = min_record_size {
@@ -196,12 +199,27 @@ async fn main() {
             // Default arg value 0 will return None here (no rate limiting)
             let mps_opt = NonZeroU32::new(*messages_per_second);
 
+            if mps_opt.is_some() && message_period.is_some() {
+                error!("Only messages_per_second or message_period can be specified");
+                process::exit(-1);
+            }
+
+            let message_period_opt: Option<Duration> = {
+                if let Some(mps) = mps_opt {
+                    Duration::from_secs(1).checked_div(mps.get())
+                } else if let Some(mp) = message_period {
+                    Some(mp.clone().into())
+                } else {
+                    None
+                }
+            };
+
             producers(
                 brokers,
                 topic.clone(),
                 unique_topics.clone(),
                 *messages,
-                mps_opt,
+                message_period_opt,
                 *count,
                 properties.clone(),
                 (*compression_type).clone(),

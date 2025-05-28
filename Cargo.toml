@@ -28,6 +28,7 @@ form_urlencoded = "1.2.1"
 bytes = "1.5.0"
 http-body-util = "0.1.0"
 shadow-rs = "0.27.1"
+humantime = "2.2.0"
 
 [build-dependencies]
 shadow-rs = "0.27.1"
