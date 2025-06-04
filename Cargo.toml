@@ -8,7 +8,7 @@ build = "build.rs"
 
 [dependencies]
 tokio = { version = "1.18.5", features = ["full"] }
-rdkafka = { version = "0.36.2", features = ["cmake-build", "zstd-pkg-config", "ssl", "sasl"]}
+rdkafka = { version = "0.37.0", features = ["cmake-build", "zstd-pkg-config", "ssl", "sasl"]}
 async-std = { version = "1.9.0", features = ["attributes"] }
 futures = { version = "0.3", default-features = false }
 clap = { version = "=4.3.24", features = ["derive"] }
