@@ -74,7 +74,7 @@ impl ConsumeCounter {
 
 async fn retrying_consume(
     brokers: String,
-    topic: String,
+    topics: Vec<String>,
     group: String,
     static_prefix: Option<String>,
     properties: Vec<(String, String)>,
@@ -83,10 +83,11 @@ async fn retrying_consume(
     metrics: mpsc::Sender<metrics::ClientMessages>,
     cancel: CancellationToken,
 ) {
+    let topics = topics.iter().map(String::as_ref).collect();
     loop {
         let c = consume(
             brokers.clone(),
-            topic.clone(),
+            &topics,
             group.clone(),
             static_prefix.clone(),
             properties.clone(),
@@ -115,7 +116,7 @@ async fn retrying_consume(
 
 async fn consume(
     brokers: String,
-    topic: String,
+    topics: &Vec<&str>,
     group: String,
     static_prefix: Option<String>,
     properties: Vec<(String, String)>,
@@ -162,7 +163,7 @@ async fn consume(
 
     debug!("Consumer {} fetching", my_id);
     consumer
-        .subscribe(&[&topic])
+        .subscribe(topics)
         .expect("Can't subscribe to specified topic");
 
     send_metric(metrics::ClientMessages::ClientStart { client_id: my_id }).await;
@@ -199,6 +200,7 @@ pub async fn consumers(
     brokers: String,
     topic: String,
     unique_topics: bool,
+    topics_per_consumer: usize,
     unique_groups: bool,
     group: String,
     static_prefix: Option<String>,
@@ -216,11 +218,13 @@ pub async fn consumers(
     let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages, cancel.clone())));
 
     for i in 0..n {
-        let topic_prefix = {
+        let topics = {
             if unique_topics {
-                format!("{}-{}", topic, i)
+                (0..topics_per_consumer)
+                    .map(|j| format!("{}-{}", topic, i * topics_per_consumer + j))
+                    .collect()
             } else {
-                topic.clone()
+                vec![topic.clone()]
             }
         };
         let group = {
@@ -232,7 +236,7 @@ pub async fn consumers(
         };
         tasks.push(tokio::spawn(retrying_consume(
             brokers.clone(),
-            topic_prefix,
+            topics,
             group,
             static_prefix.clone(),
             kv_pairs.clone(),
