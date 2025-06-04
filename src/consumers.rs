@@ -38,6 +38,10 @@ impl ConsumeCounter {
     }
 
     pub fn is_completed(&mut self) -> bool {
+        if self.cancel.is_cancelled() {
+            return true;
+        }
+
         if let Some(target_count) = self.target_count {
             self.count >= target_count
         } else {
@@ -94,11 +98,12 @@ async fn retrying_consume(
             my_id,
             counter.clone(),
             metrics.clone(),
+            cancel.clone(),
         );
 
         tokio::select! {
             _ = c => {},
-            _ = cancel.cancelled() => { return },
+            _ = cancel.cancelled() => return,
         }
 
         let complete = {
@@ -123,6 +128,7 @@ async fn consume(
     my_id: usize,
     counter: Arc<Mutex<ConsumeCounter>>,
     metrics: mpsc::Sender<metrics::ClientMessages>,
+    cancel: CancellationToken,
 ) {
     debug!("Consumer {} constructing", my_id);
 
@@ -164,16 +170,23 @@ async fn consume(
     debug!("Consumer {} fetching", my_id);
     consumer
         .subscribe(topics)
-        .expect("Can't subscribe to specified topic");
+        .expect("Can't subscribe to topic(s)");
 
     send_metric(metrics::ClientMessages::ClientStart { client_id: my_id }).await;
 
     let mut stream = consumer.stream();
     loop {
-        let item = stream.try_next().await;
+        let item = tokio::select! {
+            item = stream.try_next() => item,
+            _ = cancel.cancelled() => {
+                debug!("Consumer {} cancelled", my_id);
+                break
+            }
+        };
 
-        if let Err(_) = item {
-            return;
+        if let Err(e) = item {
+            debug!("failed to consume a message: {}", e);
+            break;
         }
 
         let msg = match item.expect("Error reading from stream") {
