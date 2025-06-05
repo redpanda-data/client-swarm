@@ -51,7 +51,7 @@ pub struct Payload {
 
 async fn produce(
     brokers: String,
-    topic: String,
+    topics: Vec<String>,
     my_id: usize,
     m: usize,
     message_period: Option<Duration>,
@@ -107,6 +107,7 @@ async fn produce(
     };
 
     let mut start_sent = false;
+    let mut current_producer_index = 0;
 
     for i in 0..m {
         if let Some(rl) = &mut rate_limit {
@@ -132,9 +133,13 @@ async fn produce(
 
         total_size += sz;
         let fut = producer.send(
-            FutureRecord::to(&topic).key(&key).payload(payload_slice),
+            FutureRecord::to(&topics[current_producer_index])
+                .key(&key)
+                .payload(payload_slice),
             timeout,
         );
+        current_producer_index = (current_producer_index + 1) % topics.len();
+
         debug!("Producer {} waiting", my_id);
         let succeeded = match fut.await {
             Err((e, _msg)) => {
@@ -191,6 +196,7 @@ pub async fn producers(
     brokers: String,
     topic: String,
     unique_topics: bool,
+    topics_per_producer: usize,
     m: usize,
     message_period: Option<Duration>,
     n: usize,
@@ -219,13 +225,18 @@ pub async fn producers(
                 cfg_pairs.push(("compression.type".to_string(), c_type.clone()));
             }
         }
-        let mut topic_prefix = topic.clone();
-        if unique_topics {
-            topic_prefix = format!("{}-{}", topic, i);
-        }
+
+        let topics = if unique_topics {
+            (0..topics_per_producer)
+                .map(|j| format!("{}-{}", topic, i * topics_per_producer + j))
+                .collect()
+        } else {
+            vec![topic.clone()]
+        };
+
         tasks.spawn(produce(
             brokers.clone(),
-            topic_prefix.clone(),
+            topics,
             i,
             m,
             message_period,

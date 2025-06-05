@@ -85,6 +85,9 @@ enum Commands {
         client_spawn_wait_ms: u64,
         #[clap(long)]
         message_period: Option<humantime::Duration>,
+        // Used iff unique_topics is enabled.
+        #[clap(long, default_value_t = 1)]
+        topics_per_client: usize,
     },
     /// Creates consumer swarm
     Consumers {
@@ -109,6 +112,9 @@ enum Commands {
         messages: Option<u64>,
         #[clap(long, default_value_t = 33)]
         client_spawn_wait_ms: u64,
+        // Used iff unique_topics is enabled.
+        #[clap(long, default_value_t = 1)]
+        topics_per_client: usize,
     },
 }
 
@@ -187,6 +193,7 @@ async fn main() {
             timeout_ms,
             client_spawn_wait_ms,
             message_period,
+            topics_per_client,
         }) => {
             let min_size = min_record_size.unwrap_or(*max_record_size);
             if let Some(min) = min_record_size {
@@ -218,6 +225,7 @@ async fn main() {
                 brokers,
                 topic.clone(),
                 unique_topics.clone(),
+                *topics_per_client,
                 *messages,
                 message_period_opt,
                 *count,
@@ -245,11 +253,13 @@ async fn main() {
             properties,
             messages,
             client_spawn_wait_ms,
+            topics_per_client,
         }) => {
             consumers(
                 brokers,
                 topic.clone(),
                 unique_topics.clone(),
+                *topics_per_client,
                 unique_groups.clone(),
                 group.clone(),
                 static_prefix.clone(),

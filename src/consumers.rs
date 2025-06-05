@@ -38,6 +38,10 @@ impl ConsumeCounter {
     }
 
     pub fn is_completed(&mut self) -> bool {
+        if self.cancel.is_cancelled() {
+            return true;
+        }
+
         if let Some(target_count) = self.target_count {
             self.count >= target_count
         } else {
@@ -74,7 +78,7 @@ impl ConsumeCounter {
 
 async fn retrying_consume(
     brokers: String,
-    topic: String,
+    topics: Vec<String>,
     group: String,
     static_prefix: Option<String>,
     properties: Vec<(String, String)>,
@@ -83,21 +87,23 @@ async fn retrying_consume(
     metrics: mpsc::Sender<metrics::ClientMessages>,
     cancel: CancellationToken,
 ) {
+    let topics = topics.iter().map(String::as_ref).collect();
     loop {
         let c = consume(
             brokers.clone(),
-            topic.clone(),
+            &topics,
             group.clone(),
             static_prefix.clone(),
             properties.clone(),
             my_id,
             counter.clone(),
             metrics.clone(),
+            cancel.clone(),
         );
 
         tokio::select! {
             _ = c => {},
-            _ = cancel.cancelled() => { return },
+            _ = cancel.cancelled() => return,
         }
 
         let complete = {
@@ -115,13 +121,14 @@ async fn retrying_consume(
 
 async fn consume(
     brokers: String,
-    topic: String,
+    topics: &Vec<&str>,
     group: String,
     static_prefix: Option<String>,
     properties: Vec<(String, String)>,
     my_id: usize,
     counter: Arc<Mutex<ConsumeCounter>>,
     metrics: mpsc::Sender<metrics::ClientMessages>,
+    cancel: CancellationToken,
 ) {
     debug!("Consumer {} constructing", my_id);
 
@@ -162,17 +169,24 @@ async fn consume(
 
     debug!("Consumer {} fetching", my_id);
     consumer
-        .subscribe(&[&topic])
-        .expect("Can't subscribe to specified topic");
+        .subscribe(topics)
+        .expect("Can't subscribe to topic(s)");
 
     send_metric(metrics::ClientMessages::ClientStart { client_id: my_id }).await;
 
     let mut stream = consumer.stream();
     loop {
-        let item = stream.try_next().await;
+        let item = tokio::select! {
+            item = stream.try_next() => item,
+            _ = cancel.cancelled() => {
+                debug!("Consumer {} cancelled", my_id);
+                break
+            }
+        };
 
-        if let Err(_) = item {
-            return;
+        if let Err(e) = item {
+            debug!("failed to consume a message: {}", e);
+            break;
         }
 
         let msg = match item.expect("Error reading from stream") {
@@ -199,6 +213,7 @@ pub async fn consumers(
     brokers: String,
     topic: String,
     unique_topics: bool,
+    topics_per_consumer: usize,
     unique_groups: bool,
     group: String,
     static_prefix: Option<String>,
@@ -216,11 +231,13 @@ pub async fn consumers(
     let counter = Arc::new(Mutex::new(ConsumeCounter::new(messages, cancel.clone())));
 
     for i in 0..n {
-        let topic_prefix = {
+        let topics = {
             if unique_topics {
-                format!("{}-{}", topic, i)
+                (0..topics_per_consumer)
+                    .map(|j| format!("{}-{}", topic, i * topics_per_consumer + j))
+                    .collect()
             } else {
-                topic.clone()
+                vec![topic.clone()]
             }
         };
         let group = {
@@ -232,7 +249,7 @@ pub async fn consumers(
         };
         tasks.push(tokio::spawn(retrying_consume(
             brokers.clone(),
-            topic_prefix,
+            topics,
             group,
             static_prefix.clone(),
             kv_pairs.clone(),
