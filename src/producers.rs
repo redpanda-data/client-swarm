@@ -64,6 +64,7 @@ async fn produce(
     let mut cfg: ClientConfig = ClientConfig::new();
     cfg.set("bootstrap.servers", &brokers);
     cfg.set("message.max.bytes", "1000000000");
+    cfg.set("client.id", format!("producer-{}", my_id));
 
     // Stash compression mode for use in log messages
     let mut compression: Option<String> = None;

@@ -148,7 +148,8 @@ async fn consume(
         .set("enable.partition.eof", "false")
         .set("socket.timeout.ms", "180000")
         .set("enable.auto.commit", "true")
-        .set("auto.offset.reset", "earliest");
+        .set("auto.offset.reset", "earliest")
+        .set("client.id", format!("consumer-{}", my_id));
 
     match static_prefix {
         Some(prefix) => {
