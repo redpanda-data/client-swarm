@@ -21,7 +21,7 @@ use log::*;
 
 use crate::connections::connections;
 use crate::consumers::consumers;
-use crate::producers::{producers, Payload};
+use crate::producers::{producers, DirectoryPayloadSource, Payload};
 
 mod connections;
 mod consumers;
@@ -88,6 +88,10 @@ enum Commands {
         // Used iff unique_topics is enabled.
         #[clap(long, default_value_t = 1)]
         topics_per_client: usize,
+        // A directory containing payloads with a .data suffix.
+        // If specified then max/min_record_size and compressible_payload are ignored.
+        #[clap(long)]
+        payload_directory: Option<String>,
     },
     /// Creates consumer swarm
     Consumers {
@@ -194,6 +198,7 @@ async fn main() {
             client_spawn_wait_ms,
             message_period,
             topics_per_client,
+            payload_directory,
         }) => {
             let min_size = min_record_size.unwrap_or(*max_record_size);
             if let Some(min) = min_record_size {
@@ -236,6 +241,9 @@ async fn main() {
                     compressible: *compressible_payload,
                     min_size,
                     max_size: *max_record_size,
+                    payload_directory: payload_directory
+                        .clone()
+                        .map(|d| DirectoryPayloadSource::new(d)),
                 },
                 Duration::from_millis(*timeout_ms),
                 mc,

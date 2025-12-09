@@ -7,8 +7,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0
 
+use async_std::sync::Arc;
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
+use std::fs;
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 
@@ -34,6 +36,41 @@ lazy_static! {
         [0x0f; MAX_COMPRESSIBLE_PAYLOAD];
 }
 
+#[derive(Clone)]
+pub struct DirectoryPayloadSource {
+    payloads: Arc<Vec<Vec<u8>>>,
+}
+
+impl DirectoryPayloadSource {
+    pub fn new(payload_dir: String) -> DirectoryPayloadSource {
+        let mut data_file_locs = fs::read_dir(payload_dir)
+            .expect("invalid payload directory")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("data"))
+            .peekable();
+
+        assert!(
+            data_file_locs.peek().is_some(),
+            "no data files in payload directory"
+        );
+
+        DirectoryPayloadSource {
+            payloads: Arc::new(
+                data_file_locs
+                    .map(|p| {
+                        fs::read(&p).expect(&format!("unable to read payload file at {:#?}", p))
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn rand_payload(&self) -> &[u8] {
+        self.payloads.choose(&mut rand::thread_rng()).unwrap()
+    }
+}
+
 pub struct ProducerStats {
     id: usize,
     rate: u64,
@@ -47,6 +84,7 @@ pub struct Payload {
     pub compressible: bool,
     pub min_size: usize,
     pub max_size: usize,
+    pub payload_directory: Option<DirectoryPayloadSource>,
 }
 
 async fn produce(
@@ -78,7 +116,7 @@ async fn produce(
     let producer: FutureProducer = cfg.create().unwrap();
 
     let mut local_payload: Option<Vec<u8>> = None;
-    if !payload.compressible {
+    if !payload.compressible && payload.payload_directory.is_none() {
         local_payload = Some(vec![0x0f; payload.max_size]);
         rand::thread_rng().fill_bytes(local_payload.as_mut().unwrap());
     }
@@ -125,7 +163,9 @@ async fn produce(
             payload.max_size
         };
 
-        let payload_slice: &[u8] = if payload.compressible {
+        let payload_slice: &[u8] = if let Some(ref dir_src) = payload.payload_directory {
+            dir_src.rand_payload()
+        } else if payload.compressible {
             &COMPRESSIBLE_PAYLOAD.as_slice()[0..sz]
         } else {
             &local_payload.as_ref().unwrap()[0..sz]
