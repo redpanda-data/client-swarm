@@ -32,3 +32,13 @@ humantime = "2.2.0"
 
 [build-dependencies]
 shadow-rs = "0.27.1"
+
+# Pull rdkafka/rdkafka-sys from a fork that bundles a patched
+# librdkafka v2.12.1 with the per-partition leader_epoch reset on
+# topic_id change (needed for delete+recreate workloads to converge
+# within ducktape timeouts). Drop this block once the upstream fix
+# at confluentinc/librdkafka lands and ships in a librdkafka
+# release that crates.io rdkafka-sys consumes.
+[patch.crates-io]
+rdkafka = { git = "https://github.com/nguyen-andrew/rust-rdkafka", branch = "rp-leader-epoch-reset" }
+rdkafka-sys = { git = "https://github.com/nguyen-andrew/rust-rdkafka", branch = "rp-leader-epoch-reset" }
