@@ -69,6 +69,10 @@ enum Commands {
         // list of librdkafka producer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
+        /// File of librdkafka properties, one `key=value` per line, applied
+        /// before --properties. Use it for secrets such as sasl.password.
+        #[clap(long)]
+        properties_file: Option<String>,
         #[clap(short = 'o', long, default_value_t = 1000)]
         timeout_ms: u64,
         #[clap(long)]
@@ -112,6 +116,10 @@ enum Commands {
         // list of librdkafka consumer properties to set as `key=value` pairs
         #[clap(short, long)]
         properties: Vec<String>,
+        /// File of librdkafka properties, one `key=value` per line, applied
+        /// before --properties. Use it for secrets such as sasl.password.
+        #[clap(long)]
+        properties_file: Option<String>,
         #[clap(short, long)]
         messages: Option<u64>,
         #[clap(long, default_value_t = 33)]
@@ -157,6 +165,19 @@ fn start_metrics(
     (mc, join_handles)
 }
 
+/// The --properties-file entries, then --properties: a later setting wins.
+fn all_properties(file: &Option<String>, properties: &[String]) -> Vec<String> {
+    let mut all = match file {
+        Some(path) => utils::read_properties_file(path).unwrap_or_else(|e| {
+            error!("{e}");
+            process::exit(-1);
+        }),
+        None => vec![],
+    };
+    all.extend_from_slice(properties);
+    all
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -189,6 +210,7 @@ async fn main() {
             messages,
             messages_per_second,
             properties,
+            properties_file,
             compression_type,
             compressible_payload,
             min_record_size,
@@ -234,7 +256,7 @@ async fn main() {
                 *messages,
                 message_period_opt,
                 *count,
-                properties.clone(),
+                all_properties(properties_file, properties),
                 (*compression_type).clone(),
                 Payload {
                     key_range: *keys,
@@ -259,6 +281,7 @@ async fn main() {
             static_prefix,
             count,
             properties,
+            properties_file,
             messages,
             client_spawn_wait_ms,
             topics_per_client,
@@ -273,7 +296,7 @@ async fn main() {
                 static_prefix.clone(),
                 *count,
                 *messages,
-                properties.clone(),
+                all_properties(properties_file, properties),
                 mc,
                 Duration::from_millis(*client_spawn_wait_ms),
             )
