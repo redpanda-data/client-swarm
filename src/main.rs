@@ -73,6 +73,11 @@ enum Commands {
         /// before --properties. Use it for secrets such as sasl.password.
         #[clap(long)]
         properties_file: Option<String>,
+        /// Exit if SASL authentication keeps failing this long with no
+        /// message getting through (e.g. "60s"). Short failures, such as a
+        /// broker restart, are retried.
+        #[clap(long, default_value = "60s")]
+        auth_failure_timeout: humantime::Duration,
         #[clap(short = 'o', long, default_value_t = 1000)]
         timeout_ms: u64,
         #[clap(long)]
@@ -120,6 +125,11 @@ enum Commands {
         /// before --properties. Use it for secrets such as sasl.password.
         #[clap(long)]
         properties_file: Option<String>,
+        /// Exit if SASL authentication keeps failing this long with no
+        /// message getting through (e.g. "60s"). Short failures, such as a
+        /// broker restart, are retried.
+        #[clap(long, default_value = "60s")]
+        auth_failure_timeout: humantime::Duration,
         #[clap(short, long)]
         messages: Option<u64>,
         #[clap(long, default_value_t = 33)]
@@ -211,6 +221,7 @@ async fn main() {
             messages_per_second,
             properties,
             properties_file,
+            auth_failure_timeout,
             compression_type,
             compressible_payload,
             min_record_size,
@@ -222,6 +233,7 @@ async fn main() {
             topics_per_client,
             payload_directory,
         }) => {
+            utils::set_auth_failure_timeout((*auth_failure_timeout).into());
             let min_size = min_record_size.unwrap_or(*max_record_size);
             if let Some(min) = min_record_size {
                 if max_record_size < min {
@@ -282,10 +294,12 @@ async fn main() {
             count,
             properties,
             properties_file,
+            auth_failure_timeout,
             messages,
             client_spawn_wait_ms,
             topics_per_client,
         }) => {
+            utils::set_auth_failure_timeout((*auth_failure_timeout).into());
             consumers(
                 brokers,
                 topic.clone(),

@@ -27,7 +27,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use log::*;
 
 use crate::metrics::{ClientMessages, MetricsContext};
-use crate::utils::split_properties;
+use crate::utils::{auth_progressed, split_properties, ExitOnAuthFailure};
 
 const MAX_COMPRESSIBLE_PAYLOAD: usize = 128 * 1024 * 1024;
 
@@ -113,7 +113,8 @@ async fn produce(
         }
         cfg.set(k, v);
     }
-    let producer: FutureProducer = cfg.create().unwrap();
+    let producer: FutureProducer<ExitOnAuthFailure> =
+        cfg.create_with_context(ExitOnAuthFailure).unwrap();
 
     let mut local_payload: Option<Vec<u8>> = None;
     if !payload.compressible && payload.payload_directory.is_none() {
@@ -198,6 +199,7 @@ async fn produce(
         };
 
         if succeeded {
+            auth_progressed();
             if !start_sent {
                 start_sent = true;
                 send_metric(ClientMessages::ClientStart { client_id: my_id }).await;

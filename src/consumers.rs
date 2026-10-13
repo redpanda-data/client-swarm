@@ -16,7 +16,7 @@ use rdkafka::config::ClientConfig;
 use log::*;
 
 use crate::metrics;
-use crate::utils::split_properties;
+use crate::utils::{auth_progressed, split_properties, ExitOnAuthFailure};
 
 struct ConsumeCounter {
     count: u64,
@@ -165,7 +165,8 @@ async fn consume(
         cfg.set(k, v);
     }
 
-    let consumer: StreamConsumer = cfg.create().unwrap();
+    let consumer: StreamConsumer<ExitOnAuthFailure> =
+        cfg.create_with_context(ExitOnAuthFailure).unwrap();
 
     debug!("Consumer {} fetching", my_id);
     consumer
@@ -196,6 +197,7 @@ async fn consume(
             }
         };
 
+        auth_progressed();
         send_metric(metrics::ClientMessages::MessageSuccess { client_id: my_id }).await;
 
         let mut counter_locked = counter.lock().unwrap();
