@@ -12,7 +12,7 @@ use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
 use std::fs;
 use std::time::{Duration, Instant};
-use tokio::task::JoinSet;
+use tokio::task::{JoinError, JoinSet};
 
 use governor::{Quota, RateLimiter};
 
@@ -22,6 +22,7 @@ use tokio;
 use tokio::sync::mpsc;
 
 use rdkafka::config::ClientConfig;
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use log::*;
@@ -30,6 +31,7 @@ use crate::metrics::{ClientMessages, MetricsContext};
 use crate::utils::{auth_progressed, split_properties, ExitOnAuthFailure};
 
 const MAX_COMPRESSIBLE_PAYLOAD: usize = 128 * 1024 * 1024;
+const QUEUE_FULL_BACKOFF: Duration = Duration::from_millis(1);
 
 lazy_static! {
     static ref COMPRESSIBLE_PAYLOAD: [u8; MAX_COMPRESSIBLE_PAYLOAD] =
@@ -87,6 +89,75 @@ pub struct Payload {
     pub payload_directory: Option<DirectoryPayloadSource>,
 }
 
+type Joined<D, M, C> = Result<(usize, usize, Result<Result<D, (KafkaError, M)>, C>), JoinError>;
+
+struct Outcomes<'a> {
+    my_id: usize,
+    m: usize,
+    compression: &'a str,
+    compressible: bool,
+    metrics: &'a mpsc::Sender<ClientMessages>,
+    errors: u32,
+    start_sent: bool,
+}
+
+impl<'a> Outcomes<'a> {
+    async fn send_metric(&self, msg: ClientMessages) {
+        if let Err(e) = self.metrics.send(msg).await {
+            error!(
+                "Error on producer {}, unable to send metrics message: {}",
+                self.my_id, e
+            );
+        }
+    }
+
+    async fn record(&mut self, i: usize, sz: usize, result: Result<(), KafkaError>) {
+        match result {
+            Ok(()) => {
+                auth_progressed();
+                if !self.start_sent {
+                    self.start_sent = true;
+                    self.send_metric(ClientMessages::ClientStart {
+                        client_id: self.my_id,
+                    })
+                    .await;
+                }
+                self.send_metric(ClientMessages::MessageSuccess {
+                    client_id: self.my_id,
+                })
+                .await;
+            }
+            Err(e) => {
+                warn!(
+                    "Error on producer {} {}/{}, producing {} bytes, compression={}, compressible={} : {}",
+                    self.my_id, i, self.m, sz, self.compression, self.compressible, e
+                );
+                self.errors += 1;
+                self.send_metric(ClientMessages::MessageFailure {
+                    client_id: self.my_id,
+                })
+                .await;
+            }
+        }
+    }
+
+    async fn delivered<D, M, C>(&mut self, joined: Joined<D, M, C>) {
+        match joined {
+            Ok((i, sz, Ok(Ok(_)))) => self.record(i, sz, Ok(())).await,
+            Ok((i, sz, Ok(Err((e, _))))) => self.record(i, sz, Err(e)).await,
+            Ok((i, sz, Err(_))) => self.record(i, sz, Err(KafkaError::Canceled)).await,
+            Err(e) => {
+                error!("Producer {} delivery task failed: {}", self.my_id, e);
+                self.errors += 1;
+                self.send_metric(ClientMessages::MessageFailure {
+                    client_id: self.my_id,
+                })
+                .await;
+            }
+        }
+    }
+}
+
 async fn produce(
     brokers: String,
     topics: Vec<String>,
@@ -96,6 +167,7 @@ async fn produce(
     properties: Vec<(String, String)>,
     payload: Payload,
     timeout: Duration,
+    max_in_flight: usize,
     metrics: mpsc::Sender<ClientMessages>,
 ) -> ProducerStats {
     debug!("Producer {} constructing", my_id);
@@ -103,10 +175,8 @@ async fn produce(
     cfg.set("bootstrap.servers", &brokers);
     cfg.set("message.max.bytes", "1000000000");
 
-    // Stash compression mode for use in log messages
     let mut compression: Option<String> = None;
 
-    // custom properties
     for (k, v) in properties {
         if k == "compression.type" {
             compression = Some(v.clone());
@@ -122,11 +192,13 @@ async fn produce(
         rand::thread_rng().fill_bytes(local_payload.as_mut().unwrap());
     }
 
-    debug!("Producer {} sending", my_id);
+    debug!(
+        "Producer {} sending with up to {} messages in flight",
+        my_id, max_in_flight
+    );
 
     let start_time = Instant::now();
     let mut total_size: usize = 0;
-    let mut errors: u32 = 0;
 
     let mut rate_limit = {
         if let Some(mp) = message_period {
@@ -136,16 +208,18 @@ async fn produce(
         }
     };
 
-    let send_metric = |msg| async {
-        if let Err(e) = metrics.send(msg).await {
-            error!(
-                "Error on producer {}, unable to send metrics message: {}",
-                my_id, e
-            );
-        }
+    let compression_name = compression.clone().unwrap_or_else(|| "none".to_string());
+    let mut outcomes = Outcomes {
+        my_id,
+        m,
+        compression: &compression_name,
+        compressible: payload.compressible,
+        metrics: &metrics,
+        errors: 0,
+        start_sent: false,
     };
 
-    let mut start_sent = false;
+    let mut in_flight = JoinSet::new();
     let mut current_producer_index = 0;
 
     for i in 0..m {
@@ -173,41 +247,40 @@ async fn produce(
         };
 
         total_size += sz;
-        let fut = producer.send(
-            FutureRecord::to(&topics[current_producer_index])
-                .key(&key)
-                .payload(payload_slice),
-            timeout,
-        );
+        let topic = &topics[current_producer_index];
         current_producer_index = (current_producer_index + 1) % topics.len();
 
-        debug!("Producer {} waiting", my_id);
-        let succeeded = match fut.await {
-            Err((e, _msg)) => {
-                let compression: &str = compression
-                    .as_ref()
-                    .map(|s: &String| s.as_str())
-                    .unwrap_or("none");
-                warn!(
-                    "Error on producer {} {}/{}, producing {} bytes, compression={}, compressible={} : {}",
-                    my_id, i, m, sz, compression, payload.compressible, e
-                );
-                errors += 1;
-                false
+        let enqueue_deadline = Instant::now() + timeout;
+        let enqueued = loop {
+            match producer.send_result(FutureRecord::to(topic).key(&key).payload(payload_slice)) {
+                Ok(delivery) => break Ok(delivery),
+                Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), _))
+                    if Instant::now() < enqueue_deadline =>
+                {
+                    tokio::time::sleep(QUEUE_FULL_BACKOFF).await;
+                }
+                Err((e, _)) => break Err(e),
             }
-            Ok(_) => true,
         };
 
-        if succeeded {
-            auth_progressed();
-            if !start_sent {
-                start_sent = true;
-                send_metric(ClientMessages::ClientStart { client_id: my_id }).await;
+        match enqueued {
+            Ok(delivery) => {
+                in_flight.spawn(async move { (i, sz, delivery.await) });
             }
-            send_metric(ClientMessages::MessageSuccess { client_id: my_id }).await;
-        } else {
-            send_metric(ClientMessages::MessageFailure { client_id: my_id }).await;
-        };
+            Err(e) => outcomes.record(i, sz, Err(e)).await,
+        }
+
+        debug!("Producer {} waiting", my_id);
+        while in_flight.len() >= max_in_flight {
+            match in_flight.join_next().await {
+                Some(joined) => outcomes.delivered(joined).await,
+                None => break,
+            }
+        }
+    }
+
+    while let Some(joined) = in_flight.join_next().await {
+        outcomes.delivered(joined).await;
     }
 
     let total_time = start_time.elapsed();
@@ -218,18 +291,17 @@ async fn produce(
 
     info!("Producer {} complete with rate {} bytes/s", my_id, rate);
 
-    if start_sent {
-        // only send "stop" if we sent "start", for producers that don't even
-        // live a single tick() we won't have sent the start, this avoid an
-        // imbalanced start/stop count
-        send_metric(ClientMessages::ClientStop { client_id: my_id }).await;
+    if outcomes.start_sent {
+        outcomes
+            .send_metric(ClientMessages::ClientStop { client_id: my_id })
+            .await;
     }
 
     ProducerStats {
         id: my_id,
         rate,
         total_size,
-        errors,
+        errors: outcomes.errors,
     }
 }
 
@@ -248,6 +320,7 @@ pub async fn producers(
     timeout: Duration,
     metrics: MetricsContext,
     client_spawn_wait: Duration,
+    max_in_flight: usize,
 ) {
     let mut tasks = JoinSet::<ProducerStats>::new();
     let kv_pairs = split_properties(properties);
@@ -285,6 +358,7 @@ pub async fn producers(
             cfg_pairs,
             payload.clone(),
             timeout,
+            max_in_flight,
             metrics.spawn_new_sender(),
         ));
 
