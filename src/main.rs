@@ -101,6 +101,11 @@ enum Commands {
         // If specified then max/min_record_size and compressible_payload are ignored.
         #[clap(long)]
         payload_directory: Option<String>,
+        /// Messages each producer keeps in flight at once. The default of 1
+        /// waits for every delivery before sending the next message, which
+        /// caps each producer at one message per linger.ms plus a round trip.
+        #[clap(long, default_value_t = 1)]
+        max_in_flight: usize,
     },
     /// Creates consumer swarm
     Consumers {
@@ -232,7 +237,12 @@ async fn main() {
             message_period,
             topics_per_client,
             payload_directory,
+            max_in_flight,
         }) => {
+            if *max_in_flight == 0 {
+                error!("max_in_flight must be at least 1");
+                process::exit(-1);
+            }
             utils::set_auth_failure_timeout((*auth_failure_timeout).into());
             let min_size = min_record_size.unwrap_or(*max_record_size);
             if let Some(min) = min_record_size {
@@ -282,6 +292,7 @@ async fn main() {
                 Duration::from_millis(*timeout_ms),
                 mc,
                 Duration::from_millis(*client_spawn_wait_ms),
+                *max_in_flight,
             )
             .await;
         }
